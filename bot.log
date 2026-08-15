@@ -1,4 +1,0 @@
-2026-08-15 17:12:08,296 [INFO] [mt5] connected: TerminalInfo(community_account=True, community_connection=True, connected=True, dlls_allowed=False, trade_allowed=True, tradeapi_disabled=False, email_enabled=False, ftp_enabled=False, notifications_enabled=False, mqid=False, build=6090, maxbars=100000, codepage=0, ping_last=257814, community_balance=0.0, retransmission=1.440576230492197, company='FBS Markets Inc.', name='FBS MetaTrader 5', language='English', path='C:\\Program Files\\FBS MetaTrader 5', data_path='C:\\Users\\korir\\AppData\\Roaming\\MetaQuotes\\Terminal\\776D2ACDFA4F66FAF3C8985F75FA9FF6', commondata_path='C:\\Users\\korir\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common')
-2026-08-15 17:12:10,984 [INFO] [bot] started on H1 watching 9 pairs
-2026-08-15 17:12:10,985 [INFO] [bot] weekend - market closed, sleeping 30 min
-2026-08-15 17:42:11,034 [INFO] [bot] weekend - market closed, sleeping 30 min
