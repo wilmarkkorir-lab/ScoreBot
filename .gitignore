@@ -1,0 +1,10 @@
+﻿.env
+.env.*
+!.env.example
+
+*.log
+*.sqlite3
+__pycache__/
+*.pyc
+venv/
+.venv/
