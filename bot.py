@@ -150,7 +150,7 @@ CONFIG = {
         "login": int(os.getenv("MT5_LOGIN", "0")),
         "password": os.getenv("MT5_PASSWORD", ""),
         "server": os.getenv("MT5_SERVER", ""),
-        "path": os.getenv("MT5_PATH", r"C:\Program Files\FBS MetaTrader 5\terminal64.exe"),
+        "path": os.getenv("MT5_PATH", ""),
     },
     "min_lot_size": 0.01,
     "max_lot_size": 5.0,
@@ -354,6 +354,9 @@ def get_or_init_daily_row(conn) -> sqlite3.Row:
         conn.commit()
         row = conn.execute("SELECT * FROM daily_pnl WHERE date=?", (today,)).fetchone()
     return row
+
+
+def trading_halted_for_today(conn) -> bool:
     row  = get_or_init_daily_row(conn)
     info = mt5.account_info()
     if info is None or row["start_balance"] == 0:
@@ -1068,10 +1071,11 @@ def open_position(conn, symbol: str, side: str, lot_multiplier: float = 1.0,
         tick_now = mt5.symbol_info_tick(symbol)
         if tick_now is None:
             return False
-        market_low  = min(tick_now.bid, tick_now.ask) * 0.995
-        market_high = max(tick_now.bid, tick_now.ask) * 1.005
-        if not (market_low <= price <= market_high):
-            log.info(f"[order] {symbol} FVG mid {price:.5f} outside market range — skipping stale FVG")
+        sym_info    = mt5.symbol_info(symbol)
+        max_dist    = (sym_info.point * 500) if sym_info else abs(tick_now.ask - tick_now.bid) * 50
+        mid_market  = (tick_now.bid + tick_now.ask) / 2
+        if abs(price - mid_market) > max_dist:
+            log.info(f"[order] {symbol} FVG mid {price:.5f} too far from market {mid_market:.5f} — skipping stale FVG")
             return False
         sl_dist = atr * sl_mult
         sl      = price - sl_dist if side == "BUY" else price + sl_dist
@@ -1578,6 +1582,9 @@ def ensure_mt5_connected() -> bool:
 
 def initialize_mt5() -> bool:
     m      = CONFIG["mt5"]
+    if not m["path"]:
+        log.error("[mt5] MT5_PATH is not set in .env — cannot initialize")
+        return False
     kwargs = {"path": m["path"]}
     if m["login"]:
         kwargs.update(login=m["login"], password=m["password"], server=m["server"])
