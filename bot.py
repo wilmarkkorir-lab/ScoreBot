@@ -354,9 +354,6 @@ def get_or_init_daily_row(conn) -> sqlite3.Row:
         conn.commit()
         row = conn.execute("SELECT * FROM daily_pnl WHERE date=?", (today,)).fetchone()
     return row
-
-
-def trading_halted_for_today(conn) -> bool:
     row  = get_or_init_daily_row(conn)
     info = mt5.account_info()
     if info is None or row["start_balance"] == 0:
