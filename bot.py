@@ -1,17 +1,20 @@
 """
-bot.py — THE PERFECT FOREX BOT: UNIFIED BLUEPRINT
-===================================================
-STRATEGY: ICT/SMC Confluence Engine (3-in-1)
-  Step 1 — Trend Bias    : 4H/D1 BOS/MSS structure (Higher TF SMC)
-  Step 2 — Liquidity     : Asian Range sweep filter (London/NY killzones)
-  Step 3 — Entry Trigger : Fair Value Gap (FVG) on 5M/15M + limit at 50% EQ
+bot.py — KORIRBOT: Supply & Demand Confluence Engine
+=====================================================
+STRATEGY: Institutional Supply & Demand (S&D)
+  Step 1 — Zone Detection  : 4H/1H DBR/RBD/RBR/DBD patterns
+                              (Displacement >= 2x ATR + FVG + BOS)
+  Step 2 — Liquidity Sweep : 15M Asian Range high/low sweep verification
+  Step 3 — CHoCH Entry     : 5M Change of Character confirmation
+  Execution                : Limit order at zone base, SL below/above zone wick
 
-MODULES:
-  1. Time/Session/News Architecture (UTC-only, 3 killzones, 30/30 news rule)
-  2. Confluence Engine (BOS + Liquidity Sweep + FVG limit order)
-  3. Risk & Safeguards (dynamic sizing, spread guard, 3% daily circuit breaker,
-     breakeven at 1:1, trailing at 1:2, target 1:3–1:5)
-  4. Telegram Interface (session alerts, signal format, heartbeat, reports)
+RISK:
+  - 1% equity risk per trade (dynamic lot sizing)
+  - TP1 at 1:2 RR — close 50% + move SL to breakeven
+  - TP2 at 1:5 RR or opposing HTF S&D zone
+  - 3% daily circuit breaker
+  - Spread cap: 1.5 pips majors / 2.5 pips minors
+  - 30/30 news blackout rule
 
 SETUP:
   pip install MetaTrader5 pandas numpy requests python-dotenv defusedxml
@@ -54,46 +57,57 @@ CONFIG = {
         "CADJPY", "CADCHF", "NZDJPY", "NZDCHF", "CHFJPY",
         "XAUUSD", "XAGUSD",
     ],
-    # Timeframes used by the confluence engine
-    "htf": "H4",        # Higher timeframe for BOS/MSS bias
-    "mtf": "M15",       # Mid timeframe for liquidity sweep detection
-    "etf": "M5",        # Entry timeframe for FVG detection
-    "exec_tf": "H1",    # Execution / indicator timeframe
+    # Timeframes
+    "htf":     "H4",   # S&D zone detection
+    "itf":     "H1",   # Intermediate confirmation
+    "mtf":     "M15",  # Liquidity sweep
+    "etf":     "M5",   # CHoCH entry confirmation
+    "exec_tf": "H1",   # Execution / indicators
     # Indicators
     "ema_fast": 50, "ema_slow": 200,
-    "macd_fast": 12, "macd_slow": 26, "macd_signal": 9,
-    "rsi_period": 14,
-    "bb_period": 20, "bb_std": 2.0,
-    "adx_period": 14, "adx_threshold": 20,
-    "require_adx_rising": True,
     "atr_period": 14,
-    # Risk
+    "adx_period": 14, "adx_threshold": 20,
+    "rsi_period": 14,
+    "macd_fast": 12, "macd_slow": 26, "macd_signal": 9,
+    "bb_period": 20, "bb_std": 2.0,
+    "volume_lookback": 20,
+    # S&D Zone detection
+    "sd_displacement_atr_mult": 2.0,  # displacement body >= 2x ATR
+    "sd_base_candles_max": 3,         # max base candles
+    "sd_base_body_atr_pct": 0.5,      # base body <= 50% ATR (small candles)
+    "sd_zone_expiry_bars": 50,        # H4 bars before zone expires unused
+    "sd_bos_lookback": 20,            # bars to find swing high/low for BOS
+    "sd_choch_lookback": 10,          # bars for CHoCH on M5
+    # Risk — S&D Blueprint
+    "risk_per_trade_pct": 1.0,
     "atr_sl_multiplier": 1.5,
     "news_atr_sl_multiplier": 2.5,
-    "risk_reward_ratio": 3.0,       # blueprint target 1:3
-    "risk_reward_be": 1.0,          # move to BE at 1:1
-    "risk_reward_trail": 2.0,       # start trailing at 1:2
-    "risk_per_trade_pct": 1.0,
-    "max_daily_loss_pct": 3.0,      # blueprint: 3% daily circuit breaker
+    "risk_reward_be": 1.0,            # move SL to BE at 1:1
+    "risk_reward_tp1": 2.0,           # TP1 at 1:2 — close 50%
+    "risk_reward_tp2": 5.0,           # TP2 at 1:5 or opposing zone
+    "risk_reward_ratio": 5.0,
+    "risk_reward_trail": 2.0,
+    "tp1_close_pct": 0.5,             # close 50% at TP1
+    "max_daily_loss_pct": 3.0,
     "drawdown_warning_pct": 2.0,
     "max_open_trades": 6,
     "max_open_per_currency": 2,
     "max_positions_per_symbol": 1,
     "magic_number": 123456,
-    "poll_seconds": 30,             # faster poll for FVG entries
-    "max_spread_pips": 2.0,         # default for majors
-    "symbol_spread_pips": {          # per-symbol spread overrides
+    "poll_seconds": 30,
+    # Spread caps — S&D blueprint
+    "max_spread_pips": 1.5,
+    "symbol_spread_pips": {
         "XAUUSD": 5.0, "XAGUSD": 8.0,
-        "GBPJPY": 3.0, "EURJPY": 3.0, "USDJPY": 3.0,
-        "AUDJPY": 3.0, "CADJPY": 3.0, "NZDJPY": 3.0, "CHFJPY": 3.0,
-        "GBPNZD": 4.0, "EURNZD": 4.0, "AUDNZD": 3.5,
+        "GBPJPY": 2.5, "EURJPY": 2.5, "USDJPY": 2.5,
+        "AUDJPY": 2.5, "CADJPY": 2.5, "NZDJPY": 2.5, "CHFJPY": 2.5,
+        "GBPNZD": 2.5, "EURNZD": 2.5, "AUDNZD": 2.5,
+        "GBPAUD": 2.5, "GBPCAD": 2.5, "EURAUD": 2.5, "EURCAD": 2.5,
     },
     "cooldown_minutes_after_loss": 15,
-    "volume_lookback": 20,
-    "volume_threshold": 0.0,
     "enable_trailing_stop": True,
     "trailing_step_atr": 0.5,
-    "breakeven_buffer_pips": 2,     # entry + 2 pips commission buffer at BE
+    "breakeven_buffer_pips": 2,
     "max_order_retries": 3,
     "max_slippage_points": 20,
     "enable_pyramiding": False,
@@ -108,8 +122,8 @@ CONFIG = {
     "weekly_report_day": 4,
     "weekly_report_hour_utc": 20,
     # News / calendar
-    "news_blackout_minutes": 30,        # blueprint: 30 min before
-    "news_resume_minutes": 30,          # blueprint: 30 min after
+    "news_blackout_minutes": 30,
+    "news_resume_minutes": 30,
     "news_breakout_lookback_bars": 3,
     "news_breakout_atr_multiplier": 0.5,
     "news_lot_multiplier": 0.5,
@@ -122,16 +136,15 @@ CONFIG = {
         "Trade Balance","Current Account","Housing","Durable Goods",
         "Consumer Confidence","ISM","ADP","Jobless Claims",
     ],
-    # FVG settings
-    "fvg_min_size_atr_pct": 0.3,    # FVG must be >= 30% of ATR to be valid
-    "fvg_expiry_bars": 10,          # FVG limit order expires after N bars
-    "fvg_reversal_bars": 3,         # bars to confirm sweep reversal back inside range
-    "calendar_fallback_events": [],  # manual fallback if FF feed is down
-    "startup_events_lookahead_minutes": 120,  # alert window on bot start
+    "fvg_min_size_atr_pct": 0.3,
+    "fvg_expiry_bars": 10,
+    "fvg_reversal_bars": 3,
+    "calendar_fallback_events": [],
+    "startup_events_lookahead_minutes": 120,
     # Asian range
-    "asian_range_start_hour": 22,   # 22:00 UTC previous day
-    "asian_range_end_hour": 6,      # 06:00 UTC today
-    "liquidity_sweep_atr_pct": 0.5, # sweep must exceed range by N * ATR
+    "asian_range_start_hour": 22,
+    "asian_range_end_hour": 6,
+    "liquidity_sweep_atr_pct": 0.5,
     "symbol_configs": {
         "XAUUSD": {"min_atr_value": 1.0},
         "XAGUSD": {"min_atr_value": 0.05},
@@ -177,9 +190,10 @@ TIMEFRAME_MAP = {
     "D1": mt5.TIMEFRAME_D1,
 }
 NON_RETRYABLE = {10018, 10019, 10027, 10031, 10004}
+USD_POSITIVE  = {"USDJPY", "USDCAD", "USDCHF"}
 
 # =============================================================================
-# KILLZONES (UTC) — blueprint Module 1
+# KILLZONES & SESSIONS
 # =============================================================================
 KILLZONES = {
     "Asian Range":  {"start": 22, "end": 6,  "trade": False, "emoji": "🌏"},
@@ -187,7 +201,6 @@ KILLZONES = {
     "New York":     {"start": 12, "end": 15, "trade": True,  "emoji": "🗽"},
     "London Close": {"start": 15, "end": 16, "trade": False, "emoji": "🔔"},
 }
-
 SESSIONS = {
     "Sydney":   {"open": 21, "close": 6,  "emoji": "🦘",
                  "pairs": ["AUDUSD","NZDUSD","AUDJPY","AUDNZD"]},
@@ -199,27 +212,10 @@ SESSIONS = {
                  "pairs": ["EURUSD","GBPUSD","USDJPY","USDCAD","XAUUSD"]},
 }
 
-USD_POSITIVE = {"USDJPY", "USDCAD", "USDCHF"}
-
 # =============================================================================
-# IN-MEMORY STATE — single container eliminates bare globals
+# STATE
 # =============================================================================
 class _State:
-    cooldown_until:      dict  = None
-    pyramid_applied:     dict  = None
-    last_session:        set   = None
-    last_killzone:       str   = None
-    last_heartbeat             = None
-    last_daily_summary         = None
-    last_weekly_report         = None
-    drawdown_warned:     bool  = False
-    calendar_cache:      list  = None
-    calendar_fetched_at        = None
-    predicted_events:    set   = None
-    asian_ranges:        dict  = None
-    active_fvgs:         dict  = None
-    last_events_alert_keys: set = None
-
     def __init__(self):
         self.cooldown_until         = {}
         self.pyramid_applied        = {}
@@ -233,10 +229,12 @@ class _State:
         self.calendar_fetched_at    = None
         self.predicted_events       = set()
         self.asian_ranges           = {}
-        self.active_fvgs            = {}
+        self.sd_zones               = {}   # symbol -> list of zone dicts
+        self.mitigated_zones        = {}   # symbol -> set of zone ids
         self.last_events_alert_keys = set()
 
 S = _State()
+
 
 # =============================================================================
 # TELEGRAM
@@ -245,11 +243,16 @@ def telegram_send(text: str) -> None:
     tg = CONFIG["telegram"]
     if not tg["enabled"] or not tg["bot_token"] or not tg["chat_id"]:
         return
-    try:
-        url = f"https://api.telegram.org/bot{tg['bot_token']}/sendMessage"
-        requests.post(url, data={"chat_id": tg["chat_id"], "text": text}, timeout=10)
-    except Exception as e:
-        log.warning(f"[telegram] {e}")
+    for attempt in range(3):
+        try:
+            url = f"https://api.telegram.org/bot{tg['bot_token']}/sendMessage"
+            requests.post(url, data={"chat_id": tg["chat_id"], "text": text}, timeout=10)
+            return
+        except Exception as e:
+            if attempt == 2:
+                log.warning(f"[telegram] {e}")
+            else:
+                time.sleep(2)
 
 
 # =============================================================================
@@ -261,7 +264,7 @@ def db_connect() -> sqlite3.Connection:
         conn.execute("""CREATE TABLE IF NOT EXISTS signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, symbol TEXT, side TEXT,
             strategy TEXT, entry_price REAL, sl REAL, tp1 REAL, tp2 REAL,
-            adx REAL, rsi REAL, fvg_high REAL, fvg_low REAL)""")
+            adx REAL, rsi REAL, zone_top REAL, zone_bottom REAL)""")
         conn.execute("""CREATE TABLE IF NOT EXISTS scans (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, symbol TEXT,
             side TEXT, reason TEXT, adx REAL, atr REAL)""")
@@ -272,16 +275,13 @@ def db_connect() -> sqlite3.Connection:
         conn.execute("""CREATE TABLE IF NOT EXISTS daily_pnl (
             date TEXT PRIMARY KEY, start_balance REAL, realized_pnl REAL,
             halted INTEGER DEFAULT 0)""")
-        # Schema migrations — add missing columns to existing databases
+        # Migrations
         existing = {row[1] for row in conn.execute("PRAGMA table_info(signals)")}
         for col, typedef in [
-            ("strategy",  "TEXT"),
-            ("tp1",       "REAL"),
-            ("tp2",       "REAL"),
-            ("adx",       "REAL"),
-            ("rsi",       "REAL"),
-            ("fvg_high",  "REAL"),
-            ("fvg_low",   "REAL"),
+            ("strategy",    "TEXT"), ("tp1",        "REAL"),
+            ("tp2",         "REAL"), ("adx",        "REAL"),
+            ("rsi",         "REAL"), ("zone_top",   "REAL"),
+            ("zone_bottom", "REAL"),
         ]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {typedef}")
@@ -293,13 +293,13 @@ def db_connect() -> sqlite3.Connection:
 
 
 def log_signal(conn, symbol, side, strategy, entry, sl, tp1, tp2, adx, rsi,
-               fvg_high=None, fvg_low=None):
+               zone_top=None, zone_bottom=None):
     conn.execute(
         """INSERT INTO signals
-           (ts,symbol,side,strategy,entry_price,sl,tp1,tp2,adx,rsi,fvg_high,fvg_low)
+           (ts,symbol,side,strategy,entry_price,sl,tp1,tp2,adx,rsi,zone_top,zone_bottom)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (datetime.now(timezone.utc).isoformat(), symbol, side, strategy,
-         entry, sl, tp1, tp2, adx, rsi, fvg_high, fvg_low))
+         entry, sl, tp1, tp2, adx, rsi, zone_top, zone_bottom))
     conn.commit()
 
 
@@ -323,7 +323,6 @@ def log_trade(conn, symbol, side, volume, price, sl, tp, retcode, comment, order
 
 
 def update_realized_pnl(conn):
-    """Sync today's realized P&L from MT5 closed deals into daily_pnl table."""
     today_start = datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0)
     deals = mt5.history_deals_get(today_start, datetime.now(timezone.utc))
@@ -339,7 +338,7 @@ def update_realized_pnl(conn):
 
 
 # =============================================================================
-# DAILY LOSS / DRAWDOWN — blueprint: 3% circuit breaker
+# DAILY LOSS / DRAWDOWN
 # =============================================================================
 def get_or_init_daily_row(conn) -> sqlite3.Row:
     today = datetime.now(timezone.utc).date().isoformat()
@@ -361,33 +360,28 @@ def trading_halted_for_today(conn) -> bool:
     info = mt5.account_info()
     if info is None or row["start_balance"] == 0:
         return False
-    # Blueprint: realized + unrealized losses combined
     pct = (info.equity - row["start_balance"]) / row["start_balance"] * 100.0
-
     if not S.drawdown_warned and pct <= -CONFIG["drawdown_warning_pct"]:
         telegram_send(
-            f"⚠️ DRAWDOWN WARNING: {pct:.2f}% today (realized + unrealized)\n"
+            f"⚠️ DRAWDOWN WARNING: {pct:.2f}% today\n"
             f"Circuit breaker triggers at -{CONFIG['max_daily_loss_pct']}%"
         )
         S.drawdown_warned = True
-
     if pct <= -CONFIG["max_daily_loss_pct"]:
         if not row["halted"]:
             msg = (f"🛑 CIRCUIT BREAKER FIRED: {pct:.2f}% daily loss\n"
-                   f"Realized + unrealized losses exceeded -{CONFIG['max_daily_loss_pct']}%\n"
                    f"All entries locked until 00:00 UTC.")
             log.warning(msg)
             telegram_send(msg)
             _close_all_positions_to_breakeven(conn)
-            today_str = datetime.now(timezone.utc).date().isoformat()
-            conn.execute("UPDATE daily_pnl SET halted=1 WHERE date=?", (today_str,))
+            conn.execute("UPDATE daily_pnl SET halted=1 WHERE date=?",
+                         (datetime.now(timezone.utc).date().isoformat(),))
             conn.commit()
         return True
     return False
 
 
 def _close_all_positions_to_breakeven(conn):
-    """Move all open positions to breakeven when circuit breaker fires."""
     positions = mt5.positions_get()
     if not positions:
         return
@@ -399,7 +393,7 @@ def _close_all_positions_to_breakeven(conn):
 
 
 # =============================================================================
-# FOREX CALENDAR — blueprint: 30/30 rule
+# FOREX CALENDAR — 30/30 rule
 # =============================================================================
 def fetch_forex_calendar() -> list:
     now = datetime.now(timezone.utc)
@@ -407,7 +401,6 @@ def fetch_forex_calendar() -> list:
             (now - S.calendar_fetched_at).total_seconds() <
             CONFIG["calendar_fetch_interval_minutes"] * 60):
         return S.calendar_cache
-    # Respect a minimum retry gap to avoid 429 rate-limit errors
     if (S.calendar_fetched_at is not None and
             (now - S.calendar_fetched_at).total_seconds() < 60):
         return S.calendar_cache
@@ -438,27 +431,23 @@ def fetch_forex_calendar() -> list:
                         tzinfo=timezone.utc)
                 events.append((dt, title, country, impact))
             except Exception as parse_err:
-                log.debug(f"[calendar] skipping event parse error: {parse_err}")
+                log.debug(f"[calendar] parse error: {parse_err}")
                 continue
         S.calendar_cache      = events
         S.calendar_fetched_at = now
         log.info(f"[calendar] {len(events)} high-impact events this week")
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 429:
-            log.warning("[calendar] rate-limited (429) — using cached data, retry in 60s")
-            S.calendar_fetched_at = now  # reset timer to prevent hammering
+            log.warning("[calendar] rate-limited (429) — retry in 60s")
+            S.calendar_fetched_at = now
         else:
             log.warning(f"[calendar] fetch failed: {e}")
         if not S.calendar_cache and CONFIG.get("calendar_fallback_events"):
             S.calendar_cache = CONFIG["calendar_fallback_events"]
-            log.warning("[calendar] using fallback manual events")
-            telegram_send("⚠️ ForexFactory feed down — using manual fallback calendar.")
     except Exception as e:
         log.warning(f"[calendar] fetch failed: {e}")
         if not S.calendar_cache and CONFIG.get("calendar_fallback_events"):
             S.calendar_cache = CONFIG["calendar_fallback_events"]
-            log.warning("[calendar] using fallback manual events")
-            telegram_send("⚠️ ForexFactory feed down — using manual fallback calendar.")
     return S.calendar_cache
 
 
@@ -469,7 +458,6 @@ def get_upcoming_events(lookahead_minutes: int = 60) -> list:
 
 
 def news_blackout_active() -> bool:
-    """True during 30 min BEFORE any high-impact event."""
     now     = datetime.now(timezone.utc)
     blackout = timedelta(minutes=CONFIG["news_blackout_minutes"])
     for dt, _, _, _ in fetch_forex_calendar():
@@ -479,7 +467,6 @@ def news_blackout_active() -> bool:
 
 
 def news_resume_window_active():
-    """Returns (event_dt, title, country) during 30 min AFTER event, else None."""
     now    = datetime.now(timezone.utc)
     window = timedelta(minutes=CONFIG["news_resume_minutes"])
     for dt, title, country, _ in fetch_forex_calendar():
@@ -496,16 +483,16 @@ def send_upcoming_events_alert(lookahead: int = 35):
     if new_keys <= S.last_events_alert_keys:
         return
     S.last_events_alert_keys |= new_keys
-    lines = [f"⚠️ HIGH-IMPACT NEWS IN {lookahead} MIN — PREPARING BLACKOUT", ""]
+    lines = [f"⚠️ HIGH-IMPACT NEWS IN {lookahead} MIN — BLACKOUT ACTIVE", ""]
     for dt, title, country in events:
         eat = (dt + timedelta(hours=3)).strftime("%H:%M EAT")
         lines.append(f"🔔 {title} ({country}) — {dt.strftime('%H:%M UTC')} / {eat}")
-    lines += ["", "⏸ Entries paused 30 min before & 30 min after each event."]
+    lines += ["", "⏸ Entries paused 30 min before & 30 min after."]
     telegram_send("\n".join(lines))
 
 
 # =============================================================================
-# SESSION & KILLZONE TRACKER — blueprint Module 1
+# SESSIONS & KILLZONES
 # =============================================================================
 def get_current_sessions() -> list:
     hour   = datetime.now(timezone.utc).hour
@@ -542,7 +529,6 @@ def in_tradeable_killzone() -> bool:
 def check_session_change():
     now_str = datetime.now(timezone.utc).strftime("%H:%M UTC")
     eat_str = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%H:%M EAT")
-
     current = set(get_current_sessions())
     if S.last_session is None:
         S.last_session = current
@@ -554,7 +540,7 @@ def check_session_change():
                 f"🕐 {now_str} / {eat_str}\n"
                 f"📈 Best pairs: {' | '.join(s['pairs'])}\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"Asian Range mapped. Scanning for liquidity sweeps."
+                f"S&D zones mapped. Scanning for liquidity sweeps."
             )
             log.info(f"[session] {name} opened")
         for name in S.last_session - current:
@@ -563,12 +549,11 @@ def check_session_change():
                 f"{s['emoji']} {name.upper()} SESSION CLOSED — {now_str} / {eat_str}"
             )
         S.last_session = current
-
     kz = get_active_killzone()
     if kz != S.last_killzone:
         if kz is not None:
-            info = KILLZONES[kz]
-            status = "ACTIVE — scanning for setups" if info["trade"] else "MONITORING only"
+            info   = KILLZONES[kz]
+            status = "ACTIVE — scanning S&D zones" if info["trade"] else "MONITORING only"
             telegram_send(
                 f"{info['emoji']} {kz.upper()} KILLZONE\n"
                 f"🕐 {now_str} / {eat_str}\n"
@@ -579,27 +564,21 @@ def check_session_change():
 
 
 # =============================================================================
-# ASIAN RANGE — blueprint: map High/Low 22:00–06:00 UTC
+# ASIAN RANGE
 # =============================================================================
 def update_asian_range(symbol: str):
-    """Fetch M15 bars covering the Asian session 22:00–06:00 UTC and store High/Low."""
+    from datetime import time as dtime
     now   = datetime.now(timezone.utc)
     today = now.date()
-
     cached = S.asian_ranges.get(symbol)
     if cached and cached.get("date") == today:
         return cached
-
     tf    = TIMEFRAME_MAP["M15"]
     rates = mt5.copy_rates_from_pos(symbol, tf, 0, 200)
     if rates is None or len(rates) < 10:
         return None
-
     df = pd.DataFrame(rates)
     df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
-
-    # Asian session: 22:00 UTC previous day to 06:00 UTC today
-    from datetime import time as dtime
     asian_start = datetime.combine(today, dtime(0, 0), tzinfo=timezone.utc) \
                   - timedelta(hours=(24 - CONFIG["asian_range_start_hour"]))
     asian_end   = datetime.combine(today, dtime(CONFIG["asian_range_end_hour"], 0),
@@ -608,7 +587,6 @@ def update_asian_range(symbol: str):
     session = df[mask]
     if len(session) < 4:
         return None
-
     result = {
         "high": float(session["high"].max()),
         "low":  float(session["low"].min()),
@@ -619,15 +597,9 @@ def update_asian_range(symbol: str):
 
 
 def liquidity_swept(symbol: str, side: str) -> bool:
-    """
-    True if price swept the Asian High/Low AND closed back inside the range
-    (reversal confirmation) within the last fvg_reversal_bars bars.
-    This is the key ICT concept: sweep + rejection, not just a touch.
-    """
     ar = update_asian_range(symbol)
     if ar is None:
         return False
-
     rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME_MAP["M15"], 0, 30)
     if rates is None or len(rates) < 5:
         return False
@@ -639,1074 +611,752 @@ def liquidity_swept(symbol: str, side: str) -> bool:
     ], axis=1).max(axis=1)
     atr       = float(tr.ewm(alpha=1/14, adjust=False).mean().iloc[-1])
     threshold = atr * CONFIG["liquidity_sweep_atr_pct"]
-    reversal_bars = CONFIG["fvg_reversal_bars"]
-
-    # Check last N bars for sweep + close back inside range
-    recent = df.tail(reversal_bars + 2)
+    recent    = df.tail(CONFIG["fvg_reversal_bars"] + 2)
     if side == "BUY":
-        # Bullish: wick swept below Asian Low, but candle CLOSED back above it
-        swept   = (recent["low"]   < ar["low"] - threshold).any()
-        reversed_ = (recent["close"].iloc[-1] > ar["low"])  # closed back inside
+        swept     = (recent["low"]  < ar["low"]  - threshold).any()
+        reversed_ = (recent["close"].iloc[-1] > ar["low"])
         return swept and reversed_
     else:
-        # Bearish: wick swept above Asian High, but candle CLOSED back below it
-        swept   = (recent["high"]  > ar["high"] + threshold).any()
-        reversed_ = (recent["close"].iloc[-1] < ar["high"]) # closed back inside
+        swept     = (recent["high"] > ar["high"] + threshold).any()
+        reversed_ = (recent["close"].iloc[-1] < ar["high"])
         return swept and reversed_
 
 
 # =============================================================================
-# FAIR VALUE GAP (FVG) SCANNER — blueprint Module 2 Step 3
+# S&D ZONE DETECTION — DBR / RBD / RBR / DBD
 # =============================================================================
-def scan_fvg(symbol: str, tf_name: str = "M5") -> list:
-    """
-    Scan for Fair Value Gaps on the given timeframe.
-    FVG (bullish): candle[i-2].high < candle[i].low  (gap between c1 high and c3 low)
-    FVG (bearish): candle[i-2].low  > candle[i].high (gap between c1 low and c3 high)
-    Returns list of dicts: {side, top, bottom, mid, bar_index, atr}
-    """
-    tf    = TIMEFRAME_MAP.get(tf_name, mt5.TIMEFRAME_M5)
-    rates = mt5.copy_rates_from_pos(symbol, tf, 0, 50)
-    if rates is None or len(rates) < 5:
-        return []
-
-    df = pd.DataFrame(rates)
-    df["time"] = pd.to_datetime(df["time"], unit="s")
-    tr  = pd.concat([
+def _calc_atr(df: pd.DataFrame, period: int = 14) -> float:
+    tr = pd.concat([
         df["high"] - df["low"],
         (df["high"] - df["close"].shift(1)).abs(),
         (df["low"]  - df["close"].shift(1)).abs(),
     ], axis=1).max(axis=1)
-    atr = float(tr.ewm(alpha=1/14, adjust=False).mean().iloc[-1])
-    min_size = atr * CONFIG["fvg_min_size_atr_pct"]
-
-    fvgs = []
-    for i in range(2, len(df) - 1):
-        c1 = df.iloc[i - 2]
-        c3 = df.iloc[i]
-        # Bullish FVG: c1 high < c3 low
-        if c3["low"] > c1["high"] and (c3["low"] - c1["high"]) >= min_size:
-            fvgs.append({
-                "side":      "BUY",
-                "top":       float(c3["low"]),
-                "bottom":    float(c1["high"]),
-                "mid":       float((c3["low"] + c1["high"]) / 2),
-                "bar_index": i,
-                "atr":       atr,
-                "time":      c3["time"],
-            })
-        # Bearish FVG: c1 low > c3 high
-        elif c1["low"] > c3["high"] and (c1["low"] - c3["high"]) >= min_size:
-            fvgs.append({
-                "side":      "SELL",
-                "top":       float(c1["low"]),
-                "bottom":    float(c3["high"]),
-                "mid":       float((c1["low"] + c3["high"]) / 2),
-                "bar_index": i,
-                "atr":       atr,
-                "time":      c3["time"],
-            })
-
-    # Return only the most recent FVG per side
-    result = []
-    seen   = set()
-    for fvg in reversed(fvgs):
-        if fvg["side"] not in seen:
-            result.append(fvg)
-            seen.add(fvg["side"])
-    return result
+    return float(tr.ewm(alpha=1/period, adjust=False).mean().iloc[-1])
 
 
-# =============================================================================
-# INDICATORS
-# =============================================================================
-def fetch_rates(symbol: str, tf_name: str = "H1", bars: int = 400,
-                min_bars: int = None):
-    tf = TIMEFRAME_MAP.get(tf_name, mt5.TIMEFRAME_H1)
-    if min_bars is None:
-        min_bars = CONFIG["ema_slow"] + CONFIG["adx_period"] + 5
-    rates = mt5.copy_rates_from_pos(symbol, tf, 0, bars)
-    if rates is None or len(rates) < min_bars:
-        return None
+def _has_fvg(df: pd.DataFrame, idx: int) -> bool:
+    """True if candle at idx leaves a Fair Value Gap (imbalance)."""
+    if idx < 1 or idx + 1 >= len(df):
+        return False
+    c1 = df.iloc[idx - 1]
+    c3 = df.iloc[idx + 1]
+    body = df.iloc[idx]
+    if body["close"] > body["open"]:   # bullish displacement
+        return float(c1["high"]) < float(c3["low"])
+    else:                               # bearish displacement
+        return float(c1["low"]) > float(c3["high"])
+
+
+def _bos_confirmed(df: pd.DataFrame, idx: int, side: str, lookback: int) -> bool:
+    """True if the displacement candle closes past the recent swing H/L."""
+    start = max(0, idx - lookback)
+    prior = df.iloc[start:idx]
+    if len(prior) < 3:
+        return False
+    if side == "DEMAND":
+        swing_high = float(prior["high"].max())
+        return float(df.iloc[idx]["close"]) > swing_high
+    else:
+        swing_low = float(prior["low"].min())
+        return float(df.iloc[idx]["close"]) < swing_low
+
+
+def detect_sd_zones(symbol: str, tf_key: str = "H4") -> list:
+    """
+    Scan HTF bars for DBR/RBR (Demand) and RBD/DBD (Supply) patterns.
+    Returns list of zone dicts with keys:
+      type, top, bottom, base_top, base_bottom, ts, id, mitigated
+    """
+    tf    = TIMEFRAME_MAP[tf_key]
+    rates = mt5.copy_rates_from_pos(symbol, tf, 0, 200)
+    if rates is None or len(rates) < 20:
+        return []
     df = pd.DataFrame(rates)
-    df["time"] = pd.to_datetime(df["time"], unit="s")
-    return df
+    df["time"]  = pd.to_datetime(df["time"], unit="s", utc=True)
+    df["body"]  = (df["close"] - df["open"]).abs()
+    atr         = _calc_atr(df)
+    if atr < CONFIG.get("min_atr_value", 0.0001):
+        return []
+
+    disp_min  = atr * CONFIG["sd_displacement_atr_mult"]
+    base_max  = atr * CONFIG["sd_base_body_atr_pct"]
+    max_base  = CONFIG["sd_base_candles_max"]
+    bos_look  = CONFIG["sd_bos_lookback"]
+    expiry    = CONFIG["sd_zone_expiry_bars"]
+    zones     = []
+    n         = len(df)
+
+    for i in range(2, n - max_base - 2):
+        candle = df.iloc[i]
+        body_i = float(candle["body"])
+
+        # ── Displacement candle must be >= 2x ATR ──────────────────────────
+        if body_i < disp_min:
+            continue
+
+        bullish_disp = float(candle["close"]) > float(candle["open"])
+
+        # ── Find base: 1-3 small candles BEFORE displacement ───────────────
+        for base_len in range(1, max_base + 1):
+            base_start = i - base_len
+            if base_start < 1:
+                break
+            base_slice = df.iloc[base_start:i]
+            if not (base_slice["body"] <= base_max).all():
+                break
+
+            # candle before base (the "leg in")
+            leg_in = df.iloc[base_start - 1]
+            leg_in_bull = float(leg_in["close"]) > float(leg_in["open"])
+
+            # ── Pattern classification ──────────────────────────────────────
+            if bullish_disp:
+                # DBR or RBR → Demand zone
+                pattern = "RBR" if leg_in_bull else "DBR"
+                zone_type = "DEMAND"
+            else:
+                # RBD or DBD → Supply zone
+                pattern = "DBD" if not leg_in_bull else "RBD"
+                zone_type = "SUPPLY"
+
+            # ── FVG filter ──────────────────────────────────────────────────
+            if not _has_fvg(df, i):
+                break
+
+            # ── BOS filter ──────────────────────────────────────────────────
+            if not _bos_confirmed(df, i, zone_type, bos_look):
+                break
+
+            # ── Zone boundaries = base candles ──────────────────────────────
+            base_high = float(base_slice["high"].max())
+            base_low  = float(base_slice["low"].min())
+
+            zone_id = f"{symbol}_{tf_key}_{zone_type}_{i}_{df.iloc[i]['time']}"
+            zones.append({
+                "id":          zone_id,
+                "symbol":      symbol,
+                "tf":          tf_key,
+                "type":        zone_type,
+                "pattern":     pattern,
+                "top":         base_high,
+                "bottom":      base_low,
+                "ts":          df.iloc[i]["time"],
+                "bar_idx":     i,
+                "expiry_bar":  i + expiry,
+                "mitigated":   False,
+            })
+            break   # found valid base, move to next displacement candle
+
+    # ── Expire old zones ────────────────────────────────────────────────────
+    current_bar = n - 1
+    zones = [z for z in zones if z["expiry_bar"] >= current_bar]
+    return zones
 
 
-def _compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain  = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
-    loss  = (-delta.clip(upper=0)).ewm(alpha=1/period, adjust=False).mean()
-    rs    = gain / loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+def refresh_sd_zones(symbol: str):
+    """Merge newly detected zones into state, preserving mitigation flags."""
+    mitigated = S.mitigated_zones.get(symbol, set())
+    fresh = detect_sd_zones(symbol, CONFIG["htf"])
+    # also scan H1 for finer zones
+    fresh += detect_sd_zones(symbol, CONFIG["itf"])
+    # remove already-mitigated
+    fresh = [z for z in fresh if z["id"] not in mitigated]
+    S.sd_zones[symbol] = fresh
 
 
-def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    df    = df.copy()
-    close = df["close"]
-    high  = df["high"]
-    low   = df["low"]
-
-    df["ema_fast"] = close.ewm(span=CONFIG["ema_fast"], adjust=False).mean()
-    df["ema_slow"] = close.ewm(span=CONFIG["ema_slow"], adjust=False).mean()
-
-    prev_close = close.shift(1)
-    tr = pd.concat([high-low, (high-prev_close).abs(),
-                    (low-prev_close).abs()], axis=1).max(axis=1)
-    df["atr"] = tr.ewm(alpha=1/CONFIG["atr_period"], adjust=False).mean()
-
-    up  = high.diff()
-    dn  = -low.diff()
-    pdm = np.where((up > dn) & (up > 0), up, 0.0)
-    mdm = np.where((dn > up) & (dn > 0), dn, 0.0)
-    atr_di = tr.ewm(alpha=1/CONFIG["adx_period"], adjust=False).mean()
-    pdi = 100 * pd.Series(pdm, index=df.index).ewm(
-        alpha=1/CONFIG["adx_period"], adjust=False).mean() / atr_di
-    mdi = 100 * pd.Series(mdm, index=df.index).ewm(
-        alpha=1/CONFIG["adx_period"], adjust=False).mean() / atr_di
-    dx  = (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan) * 100
-    df["adx"]      = dx.ewm(alpha=1/CONFIG["adx_period"], adjust=False).mean()
-    df["plus_di"]  = pdi
-    df["minus_di"] = mdi
-
-    df["rsi"] = _compute_rsi(close, CONFIG["rsi_period"])
-
-    ema_f = close.ewm(span=CONFIG["macd_fast"], adjust=False).mean()
-    ema_s = close.ewm(span=CONFIG["macd_slow"], adjust=False).mean()
-    df["macd"]        = ema_f - ema_s
-    df["macd_signal"] = df["macd"].ewm(span=CONFIG["macd_signal"], adjust=False).mean()
-    df["macd_hist"]   = df["macd"] - df["macd_signal"]
-
-    df["bb_mid"]   = close.rolling(CONFIG["bb_period"]).mean()
-    bb_std         = close.rolling(CONFIG["bb_period"]).std()
-    df["bb_upper"] = df["bb_mid"] + CONFIG["bb_std"] * bb_std
-    df["bb_lower"] = df["bb_mid"] - CONFIG["bb_std"] * bb_std
-    df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
-    df["vol_avg"]  = df["tick_volume"].rolling(CONFIG["volume_lookback"]).mean()
-    return df
+def mark_mitigated(symbol: str, zone: dict):
+    zone["mitigated"] = True
+    S.mitigated_zones.setdefault(symbol, set()).add(zone["id"])
+    S.sd_zones[symbol] = [z for z in S.sd_zones.get(symbol, [])
+                          if z["id"] != zone["id"]]
+    log.info(f"[zone] {symbol} {zone['type']} {zone['pattern']} mitigated "
+             f"@ {zone['top']:.5f}-{zone['bottom']:.5f}")
 
 
-def min_atr_for(symbol: str) -> float:
-    return CONFIG["symbol_configs"].get(symbol, {}).get(
-        "min_atr_value", CONFIG["min_atr_value"])
+def price_in_zone(price: float, zone: dict) -> bool:
+    return zone["bottom"] <= price <= zone["top"]
 
 
-def pip_size(symbol: str) -> float:
+def get_active_zone(symbol: str, price: float) -> dict | None:
+    """Return the first fresh zone that price is currently inside."""
+    for zone in S.sd_zones.get(symbol, []):
+        if price_in_zone(price, zone):
+            return zone
+    return None
+
+
+# =============================================================================
+# CHoCH CONFIRMATION (5M / 1M)
+# =============================================================================
+def detect_choch(symbol: str, side: str) -> bool:
+    """
+    Change of Character on M5:
+    BUY  → bearish structure broken: a candle closes above the last minor swing high
+    SELL → bullish structure broken: a candle closes below the last minor swing low
+    """
+    tf    = TIMEFRAME_MAP[CONFIG["etf"]]
+    rates = mt5.copy_rates_from_pos(symbol, tf, 0, 30)
+    if rates is None or len(rates) < CONFIG["sd_choch_lookback"] + 2:
+        return False
+    df = pd.DataFrame(rates)
+    lookback = CONFIG["sd_choch_lookback"]
+    recent   = df.tail(lookback + 2).reset_index(drop=True)
+    last     = recent.iloc[-1]
+
+    if side == "BUY":
+        # find the highest swing high in the lookback window (excluding last bar)
+        swing_high = float(recent.iloc[:-1]["high"].max())
+        return float(last["close"]) > swing_high
+    else:
+        swing_low = float(recent.iloc[:-1]["low"].min())
+        return float(last["close"]) < swing_low
+
+
+# =============================================================================
+# RISK ENGINE — Dynamic Lot Sizing
+# =============================================================================
+def pip_value(symbol: str) -> float:
+    """Return pip value in account currency per 1.0 lot."""
     info = mt5.symbol_info(symbol)
     if info is None:
-        return 0.0001
-    return info.point * (10 if info.digits in (3, 5) else 1)
+        return 10.0
+    # For JPY pairs 1 pip = 0.01; for others 0.0001
+    pip_size = 0.01 if "JPY" in symbol else 0.0001
+    # XAU/XAG use different pip sizes
+    if symbol in ("XAUUSD", "XAGUSD"):
+        pip_size = 0.01
+    tick_val  = info.trade_tick_value
+    tick_size = info.trade_tick_size
+    if tick_size == 0:
+        return 10.0
+    return tick_val / tick_size * pip_size
 
 
-def spread_pips(symbol: str) -> float:
-    info = mt5.symbol_info(symbol)
+def calc_lot_size(symbol: str, sl_price: float, entry_price: float) -> float:
+    info = mt5.account_info()
     if info is None:
-        return 999.0
-    return info.spread * info.point / pip_size(symbol)
+        return CONFIG["min_lot_size"]
+    balance      = info.balance
+    risk_amount  = balance * (CONFIG["risk_per_trade_pct"] / 100.0)
+    pip_size     = 0.01 if ("JPY" in symbol or symbol in ("XAUUSD","XAGUSD")) else 0.0001
+    sl_pips      = abs(entry_price - sl_price) / pip_size
+    if sl_pips < 0.1:
+        return CONFIG["min_lot_size"]
+    pv           = pip_value(symbol)
+    if pv <= 0:
+        return CONFIG["min_lot_size"]
+    lot = risk_amount / (sl_pips * pv)
+    sym_info = mt5.symbol_info(symbol)
+    if sym_info:
+        lot = max(sym_info.volume_min,
+                  min(sym_info.volume_max,
+                      round(lot / sym_info.volume_step) * sym_info.volume_step))
+    lot = max(CONFIG["min_lot_size"], min(CONFIG["max_lot_size"], lot))
+    return round(lot, 2)
 
 
-def max_spread_for(symbol: str) -> float:
-    """Per-symbol spread threshold — metals and exotics have wider natural spreads."""
-    return CONFIG["symbol_spread_pips"].get(symbol, CONFIG["max_spread_pips"])
-
-# =============================================================================
-# MODULE 2 STEP 1 — HTF BOS/MSS BIAS
-# =============================================================================
-def get_htf_bias(symbol: str) -> str | None:
-    """
-    Scan 4H chart for Break of Structure (BOS) or Market Structure Shift (MSS).
-    Returns 'BUY', 'SELL', or None if no clear bias.
-    """
-    df = fetch_rates(symbol, tf_name=CONFIG["htf"], bars=100, min_bars=30)
-    if df is None:
-        return None
-    df   = compute_indicators(df)
-    last = df.iloc[-2]
-    prev = df.iloc[-3]
-
-    # EMA alignment as primary trend filter
-    bull_ema = last["ema_fast"] > last["ema_slow"]
-
-    # BOS: new swing high/low breaking previous structure
-    swing_highs = df["high"].iloc[-20:-2]
-    swing_lows  = df["low"].iloc[-20:-2]
-    bos_bull = df["high"].iloc[-2] > swing_highs.max()   # broke above structure
-    bos_bear = df["low"].iloc[-2]  < swing_lows.min()    # broke below structure
-
-    # MSS: EMA crossover as structure shift proxy
-    mss_bull = (last["ema_fast"] > last["ema_slow"] and
-                prev["ema_fast"] <= prev["ema_slow"])
-    mss_bear = (last["ema_fast"] < last["ema_slow"] and
-                prev["ema_fast"] >= prev["ema_slow"])
-
-    if (bos_bull or mss_bull) and bull_ema:
-        return "BUY"
-    if (bos_bear or mss_bear) and not bull_ema:
-        return "SELL"
-    # Fallback: pure EMA alignment
-    return "BUY" if bull_ema else "SELL"
+def spread_ok(symbol: str) -> bool:
+    tick = mt5.symbol_info_tick(symbol)
+    info = mt5.symbol_info(symbol)
+    if tick is None or info is None:
+        return False
+    pip_size = 0.01 if ("JPY" in symbol or symbol in ("XAUUSD","XAGUSD")) else 0.0001
+    spread_pips = (tick.ask - tick.bid) / pip_size
+    cap = CONFIG["symbol_spread_pips"].get(symbol, CONFIG["max_spread_pips"])
+    return spread_pips <= cap
 
 
-# =============================================================================
-# MODULE 2 — FULL CONFLUENCE ENGINE
-# =============================================================================
-def strategy_confluence_engine(symbol: str, df_exec: pd.DataFrame):
-    """
-    3-step ICT/SMC Confluence Engine.
-    Returns (side, fvg, reason) or (None, None, reason).
-
-    Step 1: HTF BOS/MSS bias
-    Step 2: Liquidity sweep of Asian range during killzone
-    Step 3: FVG on M5 — place limit at 50% equilibrium
-    """
-    if len(df_exec) < 20:
-        return None, None, "insufficient_bars"
-
-    last = df_exec.iloc[-2]
-    prev = df_exec.iloc[-3]
-
-    # Gate: ADX
-    if last["adx"] < CONFIG["adx_threshold"]:
-        return None, None, "adx_below_threshold"
-    if CONFIG["require_adx_rising"] and last["adx"] <= prev["adx"]:
-        return None, None, "adx_not_rising"
-
-    # Gate: ATR floor
-    if last["atr"] < min_atr_for(symbol):
-        return None, None, "atr_below_floor"
-
-    # Gate: spread
-    if spread_pips(symbol) > max_spread_for(symbol):
-        return None, None, "spread_too_wide"
-
-    # Step 1: HTF bias
-    bias = get_htf_bias(symbol)
-    if bias is None:
-        return None, None, "no_htf_bias"
-
-    # Step 2: Liquidity sweep (only required during killzones)
-    if in_tradeable_killzone():
-        swept = liquidity_swept(symbol, bias)
-        if not swept:
-            return None, None, "no_liquidity_sweep"
-
-    # Step 3: FVG scan on M5
-    fvgs = scan_fvg(symbol, tf_name=CONFIG["etf"])
-    matching = [f for f in fvgs if f["side"] == bias]
-    if not matching:
-        # Fallback: check M15 FVG
-        fvgs = scan_fvg(symbol, tf_name=CONFIG["mtf"])
-        matching = [f for f in fvgs if f["side"] == bias]
-    if not matching:
-        return None, None, "no_fvg"
-
-    fvg = matching[0]
-
-    # Confirm with MACD + RSI on exec TF
-    macd_ok = (last["macd_hist"] > 0) if bias == "BUY" else (last["macd_hist"] < 0)
-    rsi_ok  = (40 <= last["rsi"] <= 70) if bias == "BUY" else (30 <= last["rsi"] <= 60)
-    if not macd_ok:
-        return None, None, "macd_no_confirm"
-    if not rsi_ok:
-        return None, None, "rsi_out_of_range"
-
-    return bias, fvg, "ok"
-
-
-# =============================================================================
-# NEWS PREDICTION
-# =============================================================================
-def _fetch_multi_tf(symbol: str) -> dict | None:
-    result = {}
-    for tf_name in ("H1", "H4", "D1"):
-        df = fetch_rates(symbol, tf_name=tf_name, bars=300, min_bars=50)
-        if df is None:
-            return None
-        result[tf_name] = compute_indicators(df)
-    return result
-
-
-def _score_symbol(symbol: str, tfs: dict) -> tuple:
-    is_usd_pos  = symbol in USD_POSITIVE
-    votes_hot   = votes_soft = 0
-    details     = []
-    for tf_name, df in tfs.items():
-        last = df.iloc[-2]
-        w    = {"H1": 1, "H4": 2, "D1": 3}.get(tf_name, 1)
-        ema_bull  = last["ema_fast"] > last["ema_slow"]
-        macd_bull = last["macd_hist"] > 0
-        rsi_bull  = last["rsi"] >= 50
-        for bull, label in [(ema_bull, "EMA"), (macd_bull, "MACD"), (rsi_bull, "RSI")]:
-            hot = (bull and is_usd_pos) or (not bull and not is_usd_pos)
-            if hot: votes_hot  += w; details.append(f"{tf_name} {label}↑")
-            else:   votes_soft += w; details.append(f"{tf_name} {label}↓")
-        if last["adx"] >= 25:
-            hot = (ema_bull and is_usd_pos) or (not ema_bull and not is_usd_pos)
-            if hot: votes_hot  += w * 2
-            else:   votes_soft += w * 2
-    total = votes_hot + votes_soft
-    if total == 0:
-        return 0.5, 50, details
-    score = votes_hot / total
-    conf  = round(score * 100) if score >= 0.5 else round((1 - score) * 100)
-    return score, conf, details
-
-
-def predict_news_event(event_title: str, event_country: str):
-    now_utc = datetime.now(timezone.utc)
-    now_eat = now_utc + timedelta(hours=3)
-    pair_results = {}
-    for symbol in CONFIG["news_symbols"]:
-        tfs = _fetch_multi_tf(symbol)
-        if tfs is None:
-            continue
-        score, conf, details = _score_symbol(symbol, tfs)
-        atr  = tfs["H1"].iloc[-2]["atr"]
-        tick = mt5.symbol_info_tick(symbol)
-        side = ("BUY" if score >= 0.5 else "SELL") if symbol in USD_POSITIVE \
-               else ("SELL" if score >= 0.5 else "BUY")
-        pair_results[symbol] = (side, conf, details, atr, tick)
-
-    if not pair_results:
-        return
-
-    low_conf = CONFIG["low_confidence_threshold"]
-    lines    = [
-        f"📰 NEWS PREDICTION: {event_title} ({event_country})",
-        f"🕐 {now_utc.strftime('%H:%M UTC')} / {now_eat.strftime('%H:%M EAT')}",
-        "━" * 42, "🎯 TRADE SETUPS", "━" * 42,
-    ]
-    for sym, (side, conf, details, atr, tick) in pair_results.items():
-        if tick is None or atr <= 0:
-            continue
-        entry   = tick.ask if side == "BUY" else tick.bid
-        sl_d    = atr * CONFIG["news_atr_sl_multiplier"]
-        tp1     = entry + sl_d * 2 if side == "BUY" else entry - sl_d * 2
-        tp2     = entry + sl_d * CONFIG["risk_reward_ratio"] if side == "BUY" \
-                  else entry - sl_d * CONFIG["risk_reward_ratio"]
-        sl      = entry - sl_d if side == "BUY" else entry + sl_d
-        sl_pips = round(sl_d / pip_size(sym))
-        arrow   = "📈 BUY  ⬆️" if side == "BUY" else "📉 SELL ⬇️"
-        caution = "\n  ⚠️ Low confidence — reduce size" if conf < low_conf else ""
-        lines.append(
-            f"\n⚡ NEW SIGNAL EXECUTED ⚡\n"
-            f"📈 Pair: {sym} ({arrow})\n"
-            f"🎯 Strategy: News Confluence ({event_title})\n"
-            f"📥 Entry Price: {entry:.5f}\n"
-            f"🛑 Stop Loss: {sl:.5f} ({sl_pips} Pips)\n"
-            f"🎯 Take Profit 1: {tp1:.5f} (1:2 RR - Move to BE)\n"
-            f"🎯 Take Profit 2: {tp2:.5f} (1:{CONFIG['risk_reward_ratio']:.0f} RR - Target)\n"
-            f"💰 Calculated Risk: {CONFIG['risk_per_trade_pct']:.2f}% (Exact Position Sized)\n"
-            f"📊 Confidence: {conf}%  |  Basis: {' | '.join(details[:3])}{caution}"
-        )
-    lines += ["", "━" * 42,
-              "✅ Wait for breakout candle to close before entering",
-              "❌ Do NOT trade against the signal direction", "━" * 42]
-    msg = "\n".join(lines)
-    log.info("\n" + msg)
-    telegram_send(msg)
-
-
-# =============================================================================
-# POSITION SIZING — blueprint dynamic equation
-# =============================================================================
-def calc_lot_size(symbol: str, sl_distance_price: float,
-                  lot_multiplier: float = 1.0) -> float:
-    info    = mt5.symbol_info(symbol)
-    account = mt5.account_info()
-    if info is None or account is None or sl_distance_price <= 0:
-        return 0.0
-    risk_amount  = account.balance * (CONFIG["risk_per_trade_pct"] / 100.0) * lot_multiplier
-    tick_size    = info.trade_tick_size or info.point
-    tick_value   = info.trade_tick_value
-    if tick_size <= 0 or tick_value <= 0:
-        return 0.0
-    loss_per_lot = (sl_distance_price / tick_size) * tick_value
-    if loss_per_lot <= 0:
-        return 0.0
-    lots = risk_amount / loss_per_lot
-    lots = max(CONFIG["min_lot_size"], min(CONFIG["max_lot_size"], lots))
-    step = info.volume_step or 0.01
-    lots = round(round(lots / step) * step, 2)
-    return max(lots, info.volume_min or CONFIG["min_lot_size"])
+def currency_exposure_ok(symbol: str) -> bool:
+    """Enforce max 2 open trades per base currency."""
+    base = symbol[:3]
+    positions = mt5.positions_get()
+    if not positions:
+        return True
+    count = sum(1 for p in positions
+                if p.magic == CONFIG["magic_number"] and p.symbol[:3] == base)
+    return count < CONFIG["max_open_per_currency"]
 
 
 # =============================================================================
 # ORDER EXECUTION
 # =============================================================================
-def get_filling_mode(symbol: str) -> int:
+def place_limit_order(symbol: str, side: str, entry: float, sl: float,
+                      tp1: float, tp2: float, lot: float, comment: str,
+                      conn) -> int | None:
+    order_type = mt5.ORDER_TYPE_BUY_LIMIT if side == "BUY" else mt5.ORDER_TYPE_SELL_LIMIT
     info = mt5.symbol_info(symbol)
     if info is None:
-        return mt5.ORDER_FILLING_IOC
-    flags = info.filling_mode
-    if flags & 1:
-        return mt5.ORDER_FILLING_FOK
-    if flags & 2:
-        return mt5.ORDER_FILLING_IOC
-    return mt5.ORDER_FILLING_RETURN
-
-
-def open_position(conn, symbol: str, side: str, lot_multiplier: float = 1.0,
-                  tag: str = "", fvg: dict = None) -> bool:
-    info = mt5.symbol_info(symbol)
+        return None
+    digits = info.digits
+    request = {
+        "action":        mt5.TRADE_ACTION_PENDING,
+        "symbol":        symbol,
+        "volume":        lot,
+        "type":          order_type,
+        "price":         round(entry, digits),
+        "sl":            round(sl,    digits),
+        "tp":            round(tp2,   digits),
+        "deviation":     CONFIG["max_slippage_points"],
+        "magic":         CONFIG["magic_number"],
+        "comment":       comment[:31],
+        "type_time":     mt5.ORDER_TIME_GTC,
+        "type_filling":  mt5.ORDER_FILLING_IOC,
+    }
     tick = mt5.symbol_info_tick(symbol)
-    if info is None or tick is None:
-        return False
-
-    df = fetch_rates(symbol, tf_name=CONFIG["exec_tf"])
-    if df is None:
-        return False
-    df      = compute_indicators(df)
-    atr     = df.iloc[-2]["atr"]
-    filling = get_filling_mode(symbol)
-    comment = f"{CONFIG['magic_number']}{('-'+tag) if tag else ''}"[:31]
-
-    is_news = tag == "news"
-    sl_mult = CONFIG["news_atr_sl_multiplier"] if is_news else CONFIG["atr_sl_multiplier"]
-
-    # FVG limit order: entry at 50% equilibrium of the gap
-    if fvg is not None:
-        price   = fvg["mid"]
-        # Validate FVG price is still within current market range (avoid retcode=10015)
-        tick_now = mt5.symbol_info_tick(symbol)
-        if tick_now is None:
-            return False
-        sym_info    = mt5.symbol_info(symbol)
-        max_dist    = (sym_info.point * 500) if sym_info else abs(tick_now.ask - tick_now.bid) * 50
-        mid_market  = (tick_now.bid + tick_now.ask) / 2
-        if abs(price - mid_market) > max_dist:
-            log.info(f"[order] {symbol} FVG mid {price:.5f} too far from market {mid_market:.5f} — skipping stale FVG")
-            return False
-        sl_dist = atr * sl_mult
-        sl      = price - sl_dist if side == "BUY" else price + sl_dist
-        tp1     = price + sl_dist * CONFIG["risk_reward_be"] if side == "BUY" \
-                  else price - sl_dist * CONFIG["risk_reward_be"]
-        tp      = price + sl_dist * CONFIG["risk_reward_ratio"] if side == "BUY" \
-                  else price - sl_dist * CONFIG["risk_reward_ratio"]
-        volume  = calc_lot_size(symbol, sl_dist, lot_multiplier)
-        if volume <= 0:
-            return False
-        lim_type = mt5.ORDER_TYPE_BUY_LIMIT if side == "BUY" else mt5.ORDER_TYPE_SELL_LIMIT
-        request  = {
-            "action": mt5.TRADE_ACTION_PENDING, "symbol": symbol, "volume": volume,
-            "type": lim_type, "price": price, "sl": sl, "tp": tp,
-            "deviation": CONFIG["max_slippage_points"], "magic": CONFIG["magic_number"],
-            "comment": comment, "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": filling,
-        }
-    else:
-        price   = tick.ask if side == "BUY" else tick.bid
-        sl_dist = atr * sl_mult
-        sl      = price - sl_dist if side == "BUY" else price + sl_dist
-        tp      = price + sl_dist * CONFIG["risk_reward_ratio"] if side == "BUY" \
-                  else price - sl_dist * CONFIG["risk_reward_ratio"]
-        volume  = calc_lot_size(symbol, sl_dist, lot_multiplier)
-        if volume <= 0:
-            return False
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": volume,
-            "type": mt5.ORDER_TYPE_BUY if side == "BUY" else mt5.ORDER_TYPE_SELL,
-            "price": price, "sl": sl, "tp": tp,
-            "deviation": CONFIG["max_slippage_points"], "magic": CONFIG["magic_number"],
-            "comment": comment, "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": filling,
-        }
-
-    sl_pips = round(abs(price - sl) / pip_size(symbol))
-    tp_pips = round(abs(tp - price) / pip_size(symbol))
-
-    for attempt in range(1, CONFIG["max_order_retries"] + 1):
+    if tick is None:
+        return None
+    # retcode 10015: pending price too close to market — skip if within 1 pip
+    pip_size = 0.01 if ("JPY" in symbol or symbol in ("XAUUSD", "XAGUSD")) else 0.0001
+    market_price = tick.ask if side == "BUY" else tick.bid
+    if abs(round(entry, info.digits) - market_price) < pip_size:
+        log.info(f"[order] {symbol} {side} price {entry:.5f} too close to market "
+                 f"{market_price:.5f} — skipping pending order")
+        return None
+    for attempt in range(CONFIG["max_order_retries"]):
         result = mt5.order_send(request)
         if result is None:
-            log.error(f"[order] None for {symbol}: {mt5.last_error()}")
-            time.sleep(1.5)
+            log.warning(f"[order] {symbol} order_send returned None (attempt {attempt+1})")
+            time.sleep(1)
             continue
         if result.retcode == mt5.TRADE_RETCODE_DONE:
-            order_type_str = "Limit" if fvg else "Market"
-            msg = (
-                f"⚡ NEW SIGNAL EXECUTED ⚡\n"
-                f"📈 Pair: {symbol} ({'Buy' if side=='BUY' else 'Sell'} {order_type_str})\n"
-                f"🎯 Strategy: Confluence Engine{' ('+tag+')' if tag else ''}\n"
-                f"📥 Entry Price: {price:.5f}\n"
-                f"🛑 Stop Loss: {sl:.5f} ({sl_pips} Pips)\n"
-                f"🎯 Take Profit 1: {price + abs(price-sl) if side=='BUY' else price - abs(price-sl):.5f} "
-                f"(1:1 RR - Move to BE)\n"
-                f"🎯 Take Profit 2: {tp:.5f} (1:{CONFIG['risk_reward_ratio']:.0f} RR - Target)\n"
-                f"💰 Calculated Risk: {CONFIG['risk_per_trade_pct']:.2f}% (Exact Position Sized)"
-            )
-            log.info(f"[order] {msg}")
-            telegram_send(msg)
-            log_trade(conn, symbol, side, volume, price, sl, tp,
+            log.info(f"[order] {symbol} {side} limit placed @ {entry:.5f} "
+                     f"SL={sl:.5f} TP={tp2:.5f} lot={lot}")
+            log_trade(conn, symbol, side, lot, entry, sl, tp2,
                       result.retcode, comment, result.order)
-            return True
-        if result.retcode == 10018:
-            log_trade(conn, symbol, side, volume, price, sl, tp,
-                      result.retcode, "market_closed", 0)
-            return False
+            return result.order
         if result.retcode in NON_RETRYABLE:
-            log.warning(f"[order] {symbol} non-retryable {result.retcode}")
-            log_trade(conn, symbol, side, volume, price, sl, tp,
-                      result.retcode, result.comment, 0)
-            return False
-        log.warning(f"[order] {symbol} attempt {attempt} retcode={result.retcode}")
-        time.sleep(1.5)
-        tick = mt5.symbol_info_tick(symbol)
-        if tick and fvg is None:
-            request["price"] = tick.ask if side == "BUY" else tick.bid
-
-    log_trade(conn, symbol, side, volume, price, sl, tp, -1, "exhausted_retries", 0)
-    return False
+            log.warning(f"[order] {symbol} non-retryable error {result.retcode}: "
+                        f"{result.comment}")
+            break
+        log.warning(f"[order] {symbol} retcode={result.retcode} attempt {attempt+1}")
+        time.sleep(1)
+    return None
 
 
-def cancel_expired_fvg_orders():
-    """Cancel pending FVG limit orders older than fvg_expiry_bars H1 candles."""
-    orders = mt5.orders_get()
-    if not orders:
+def modify_sltp(position, new_sl: float, new_tp: float = 0.0):
+    info = mt5.symbol_info(position.symbol)
+    if info is None:
         return
-    now         = datetime.now(timezone.utc)
-    expiry_secs = CONFIG["fvg_expiry_bars"] * 3600  # H1 bars in seconds
-    for o in orders:
-        if o.magic != CONFIG["magic_number"]:
-            continue
-        if o.type not in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT):
-            continue
-        age = now - datetime.fromtimestamp(o.time_setup, tz=timezone.utc)
-        if age.total_seconds() >= expiry_secs:
-            result = mt5.order_send({
-                "action": mt5.TRADE_ACTION_REMOVE,
-                "order":  o.ticket,
-            })
-            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                log.info(f"[fvg] expired limit order {o.ticket} {o.symbol} cancelled")
-                telegram_send(
-                    f"🗑 FVG LIMIT EXPIRED: {o.symbol}\n"
-                    f"  Order #{o.ticket} cancelled after {CONFIG['fvg_expiry_bars']} bars"
-                )
-
-
-def open_positions_count(symbol: str = None) -> int:
-    positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
-    if not positions:
-        return 0
-    return len([p for p in positions if p.magic == CONFIG["magic_number"]])
-
-
-# =============================================================================
-# POSITION MANAGEMENT — blueprint: BE at 1:1, trail at 1:2
-# =============================================================================
-def modify_sltp(position, new_sl, new_tp=None):
-    result = mt5.order_send({
+    d = info.digits
+    mt5.order_send({
         "action":   mt5.TRADE_ACTION_SLTP,
         "position": position.ticket,
         "symbol":   position.symbol,
-        "sl":       new_sl,
-        "tp":       new_tp if new_tp is not None else position.tp,
+        "sl":       round(new_sl, d),
+        "tp":       round(new_tp if new_tp else position.tp, d),
     })
-    if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-        log.info(f"[manage] {position.symbol} SL -> {new_sl:.5f}")
-    return result
 
 
-def manage_open_positions(conn):
+# =============================================================================
+# TRADE MANAGEMENT — Breakeven, TP1 partial, Trailing
+# =============================================================================
+def manage_open_trades(conn):
     positions = mt5.positions_get()
     if not positions:
         return
     for p in positions:
         if p.magic != CONFIG["magic_number"]:
             continue
-        df = fetch_rates(p.symbol, tf_name=CONFIG["exec_tf"],
-                         bars=CONFIG["atr_period"] + 10,
-                         min_bars=CONFIG["atr_period"] + 5)
-        if df is None:
+        side      = "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL"
+        entry     = p.price_open
+        sl        = p.sl
+        if sl == 0:
             continue
-        df  = compute_indicators(df)
-        atr = df.iloc[-2]["atr"]
-        pip = pip_size(p.symbol)
-        is_buy = p.type == mt5.POSITION_TYPE_BUY
-        t = mt5.symbol_info_tick(p.symbol)
-        if t is None:
+        risk      = abs(entry - sl)
+        if risk == 0:
             continue
-        cur   = t.bid if is_buy else t.ask
-        prof  = (cur - p.price_open) if is_buy else (p.price_open - cur)
-        sl_d  = abs(p.price_open - p.sl) if p.sl != 0 else atr * CONFIG["atr_sl_multiplier"]
+        price     = p.price_current
+        rr        = (price - entry) / risk if side == "BUY" else (entry - price) / risk
 
-        # Breakeven at 1:1 + commission buffer
-        be_dist  = sl_d * CONFIG["risk_reward_be"]
-        be_price = p.price_open + CONFIG["breakeven_buffer_pips"] * pip \
-                   if is_buy else p.price_open - CONFIG["breakeven_buffer_pips"] * pip
-        at_be    = (is_buy and p.sl >= p.price_open) or \
-                   (not is_buy and p.sl != 0 and p.sl <= p.price_open)
-        if prof >= be_dist and not at_be:
-            modify_sltp(p, be_price)
-            telegram_send(
-                f"🔒 BREAKEVEN: {p.symbol} {'BUY' if is_buy else 'SELL'}\n"
-                f"  SL moved to {be_price:.5f} (entry + commission buffer)"
-            )
+        # ── Breakeven at 1:1 ────────────────────────────────────────────────
+        pip_size  = 0.01 if ("JPY" in p.symbol or p.symbol in ("XAUUSD","XAGUSD")) else 0.0001
+        be_buffer = CONFIG["breakeven_buffer_pips"] * pip_size
+        be_sl     = (entry + be_buffer) if side == "BUY" else (entry - be_buffer)
+        if rr >= CONFIG["risk_reward_be"]:
+            if (side == "BUY"  and p.sl < be_sl) or \
+               (side == "SELL" and (p.sl == 0 or p.sl > be_sl)):
+                modify_sltp(p, be_sl)
+                log.info(f"[mgmt] {p.symbol} moved to breakeven")
 
-        # Trailing stop at 1:2
-        if CONFIG["enable_trailing_stop"]:
-            trail_dist = sl_d * CONFIG["risk_reward_trail"]
-            step       = CONFIG["trailing_step_atr"] * atr
-            if prof >= trail_dist and step > 0:
-                new_sl = (cur - step) if is_buy else (cur + step)
-                if is_buy and new_sl > p.sl:
+        # ── TP1 partial close at 1:2 ─────────────────────────────────────
+        if rr >= CONFIG["risk_reward_tp1"]:
+            comment_tag = f"TP1_{p.ticket}"
+            if comment_tag not in getattr(manage_open_trades, "_tp1_done", set()):
+                close_partial(p, CONFIG["tp1_close_pct"], conn)
+                if not hasattr(manage_open_trades, "_tp1_done"):
+                    manage_open_trades._tp1_done = set()
+                manage_open_trades._tp1_done.add(comment_tag)
+
+        # ── Trailing stop after TP1 ──────────────────────────────────────
+        if CONFIG["enable_trailing_stop"] and rr >= CONFIG["risk_reward_trail"]:
+            atr_rates = mt5.copy_rates_from_pos(
+                p.symbol, TIMEFRAME_MAP[CONFIG["etf"]], 0, 20)
+            if atr_rates is not None and len(atr_rates) >= 14:
+                atr_df  = pd.DataFrame(atr_rates)
+                atr_val = _calc_atr(atr_df)
+                trail   = atr_val * CONFIG["trailing_step_atr"]
+                new_sl  = (price - trail) if side == "BUY" else (price + trail)
+                if (side == "BUY"  and new_sl > p.sl) or \
+                   (side == "SELL" and (p.sl == 0 or new_sl < p.sl)):
                     modify_sltp(p, new_sl)
-                elif not is_buy and (p.sl == 0 or new_sl < p.sl):
-                    modify_sltp(p, new_sl)
-
-        # Pyramiding
-        if CONFIG["enable_pyramiding"]:
-            applied = S.pyramid_applied.setdefault(p.symbol, set())
-            for i, level in enumerate(CONFIG["pyramid_levels"]):
-                if i in applied:
-                    continue
-                if prof >= level["atr_multiplier"] * atr:
-                    side = "BUY" if is_buy else "SELL"
-                    if open_position(conn, p.symbol, side,
-                                     level["lot_multiplier"], tag=f"pyr{i}"):
-                        applied.add(i)
-
-# =============================================================================
-# MARKET GUARDS
-# =============================================================================
-def is_weekend() -> bool:
-    return datetime.now(timezone.utc).weekday() >= 5
 
 
-def symbol_tradeable(symbol: str) -> bool:
-    info = mt5.symbol_info(symbol)
-    if info is None:
-        return False
-    if not info.visible:
-        mt5.symbol_select(symbol, True)
-        info = mt5.symbol_info(symbol)
-    return info is not None and info.trade_mode != mt5.SYMBOL_TRADE_MODE_DISABLED
-
-
-def in_cooldown(symbol: str) -> bool:
-    until = S.cooldown_until.get(symbol)
-    return until is not None and datetime.now(timezone.utc) < until
-
-
-def refresh_cooldowns(conn):
-    lookback = datetime.now(timezone.utc) - timedelta(
-        minutes=CONFIG["cooldown_minutes_after_loss"] + 5)
-    deals = mt5.history_deals_get(lookback, datetime.now(timezone.utc))
-    if not deals:
+def close_partial(position, pct: float, conn):
+    close_vol = round(position.volume * pct, 2)
+    info      = mt5.symbol_info(position.symbol)
+    if info is None or close_vol < info.volume_min:
         return
-    for d in deals:
-        if d.magic != CONFIG["magic_number"] or d.entry != mt5.DEAL_ENTRY_OUT:
-            continue
-        if d.profit < 0:
-            end = datetime.fromtimestamp(d.time, tz=timezone.utc) + \
-                  timedelta(minutes=CONFIG["cooldown_minutes_after_loss"])
-            if end > datetime.now(timezone.utc):
-                prev = S.cooldown_until.get(d.symbol)
-                if prev is None or end > prev:
-                    S.cooldown_until[d.symbol] = end
-
-
-def currency_codes(symbol: str) -> list:
-    m = re.match(r"^([A-Z]{3})([A-Z]{3})$", symbol)
-    return [m.group(1), m.group(2)] if m else [symbol]
-
-
-def currency_exposure_ok(symbol: str) -> bool:
-    positions = mt5.positions_get()
-    if not positions:
-        return True
-    codes = set(currency_codes(symbol))
-    count = sum(1 for p in positions
-                if p.magic == CONFIG["magic_number"]
-                and codes & set(currency_codes(p.symbol)))
-    return count < CONFIG["max_open_per_currency"]
-
-
-# =============================================================================
-# REPORTS & HEARTBEAT
-# =============================================================================
-def send_daily_summary(conn):
-    info = mt5.account_info()
-    if info is None:
+    close_vol = max(info.volume_min,
+                    round(close_vol / info.volume_step) * info.volume_step)
+    order_type = mt5.ORDER_TYPE_SELL if position.type == mt5.POSITION_TYPE_BUY \
+                 else mt5.ORDER_TYPE_BUY
+    tick = mt5.symbol_info_tick(position.symbol)
+    if tick is None:
         return
-    row     = get_or_init_daily_row(conn)
-    pnl     = info.equity - row["start_balance"]
-    pnl_pct = pnl / row["start_balance"] * 100 if row["start_balance"] else 0
-    today   = datetime.now(timezone.utc).date().isoformat()
-    trades  = conn.execute(
-        "SELECT COUNT(*) FROM trades WHERE ts LIKE ?", (f"{today}%",)).fetchone()[0]
-    arrow   = "📈" if pnl >= 0 else "📉"
-    telegram_send(
-        f"📊 DAILY SUMMARY — {today}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"{arrow} P&L : {'+'if pnl>=0 else ''}{pnl:.2f} ({pnl_pct:+.2f}%)\n"
-        f"💰 Balance : {info.balance:.2f}\n"
-        f"💎 Equity  : {info.equity:.2f}\n"
-        f"📋 Trades  : {trades}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 Bot running — {len(CONFIG['symbols'])} pairs monitored"
+    price = tick.bid if order_type == mt5.ORDER_TYPE_SELL else tick.ask
+    result = mt5.order_send({
+        "action":       mt5.TRADE_ACTION_DEAL,
+        "symbol":       position.symbol,
+        "volume":       close_vol,
+        "type":         order_type,
+        "position":     position.ticket,
+        "price":        price,
+        "deviation":    CONFIG["max_slippage_points"],
+        "magic":        CONFIG["magic_number"],
+        "comment":      "TP1_partial",
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    })
+    if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+        log.info(f"[mgmt] {position.symbol} partial close {close_vol} lots @ TP1")
+        log_trade(conn, position.symbol,
+                  "SELL" if order_type == mt5.ORDER_TYPE_SELL else "BUY",
+                  close_vol, price, 0, 0, result.retcode, "TP1_partial", result.order)
+
+
+# =============================================================================
+# TELEGRAM EXECUTION SIGNAL
+# =============================================================================
+def send_execution_signal(symbol: str, side: str, entry: float, sl: float,
+                          tp1: float, tp2: float, lot: float,
+                          zone: dict, kz: str):
+    pip_size = 0.01 if ("JPY" in symbol or symbol in ("XAUUSD","XAGUSD")) else 0.0001
+    sl_pips  = round(abs(entry - sl) / pip_size, 1)
+    eat_time = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%H:%M EAT")
+    arrow    = "📈" if side == "BUY" else "📉"
+    msg = (
+        f"⚡ EXECUTION SIGNAL ⚡\n"
+        f"{arrow} Pair: {symbol} ({side} Limit Triggered)\n"
+        f"🎯 Setup: {zone['tf']} {zone['type']} Zone ({zone['pattern']}) "
+        f"+ 15M Liquidity Sweep + 5M CHoCH\n"
+        f"🕐 Time: {eat_time} | Killzone: {kz}\n"
+        f"📥 Entry:  {entry:.5f}\n"
+        f"🛑 SL:     {sl:.5f}  ({sl_pips} pips)\n"
+        f"🎯 TP1:    {tp1:.5f}  (1:2 RR — 50% close + Breakeven)\n"
+        f"🎯 TP2:    {tp2:.5f}  (1:5 RR — Structural Target)\n"
+        f"💰 Risk:   {CONFIG['risk_per_trade_pct']}% equity | Lot: {lot}"
     )
-    log.info("[report] daily summary sent")
-
-
-def send_weekly_report(conn):
-    info = mt5.account_info()
-    if info is None:
-        return
-    week_ago  = (datetime.now(timezone.utc) - timedelta(days=7)).date().isoformat()
-    rows      = conn.execute(
-        "SELECT realized_pnl FROM daily_pnl WHERE date >= ?", (week_ago,)).fetchall()
-    total_pnl = sum(r[0] or 0 for r in rows)
-    trades    = conn.execute(
-        "SELECT COUNT(*) FROM trades WHERE ts >= ?", (week_ago,)).fetchone()[0]
-    telegram_send(
-        f"📅 WEEKLY REPORT\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 Balance : {info.balance:.2f}\n"
-        f"💎 Equity  : {info.equity:.2f}\n"
-        f"📈 Week P&L: {'+'if total_pnl>=0 else ''}{total_pnl:.2f}\n"
-        f"📋 Trades  : {trades}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"Have a great weekend! 🎉"
-    )
-    log.info("[report] weekly report sent")
-
-
-def check_scheduled_reports(conn):
-    now   = datetime.now(timezone.utc)
-    today = now.date()
-    if S.last_daily_summary != today:
-        S.drawdown_warned = False
-    if now.hour == CONFIG["daily_summary_hour_utc"] and S.last_daily_summary != today:
-        send_daily_summary(conn)
-        S.last_daily_summary = today
-    if (now.weekday() == CONFIG["weekly_report_day"] and
-            now.hour == CONFIG["weekly_report_hour_utc"] and
-            S.last_weekly_report != today):
-        send_weekly_report(conn)
-        S.last_weekly_report = today
-
-
-def check_heartbeat():
-    now      = datetime.now(timezone.utc)
-    interval = timedelta(hours=CONFIG["telegram_heartbeat_hours"])
-    if S.last_heartbeat is None or (now - S.last_heartbeat) >= interval:
-        info     = mt5.account_info()
-        sessions = ", ".join(get_current_sessions()) or "None"
-        kz       = get_active_killzone() or "None"
-        bal      = f"{info.balance:.2f}" if info else "N/A"
-        eq       = f"{info.equity:.2f}"  if info else "N/A"
-        telegram_send(
-            f"💓 BOT HEARTBEAT — {now.strftime('%H:%M UTC')}\n"
-            f"💰 Balance : {bal}  |  Equity: {eq}\n"
-            f"🌍 Sessions: {sessions}\n"
-            f"⚡ Killzone: {kz}\n"
-            f"📊 Open trades: {open_positions_count()}\n"
-            f"📰 Calendar: {len(fetch_forex_calendar())} events this week"
-        )
-        S.last_heartbeat = now
+    telegram_send(msg)
 
 
 # =============================================================================
-# SCAN CYCLE
+# CORE SCAN — runs every poll cycle for one symbol
 # =============================================================================
-def run_cycle(conn):
-    account = mt5.account_info()
-    if account is None:
-        log.error("[bot] account_info() failed")
+def scan_symbol(symbol: str, conn):
+    # ── Gate 1: tradeable killzone ──────────────────────────────────────────
+    if not in_tradeable_killzone():
         return
+    kz = get_active_killzone()
 
-    row       = get_or_init_daily_row(conn)
-    today_pnl = account.equity - row["start_balance"]
-    kz        = get_active_killzone() or "off-hours"
-    log.info(f"[bot] bal={account.balance:.2f} eq={account.equity:.2f} "
-             f"open={open_positions_count()} pnl={today_pnl:.2f} kz={kz}")
-
-    refresh_cooldowns(conn)
-
-    if trading_halted_for_today(conn):
-        return
-    if open_positions_count() >= CONFIG["max_open_trades"]:
-        return
-
-    # Upcoming event alerts + predictions
-    send_upcoming_events_alert()
-    for dt, title, country in get_upcoming_events(lookahead_minutes=20):
-        key = f"{dt.isoformat()}_{title}"
-        if key not in S.predicted_events:
-            predict_news_event(title, country)
-            S.predicted_events.add(key)
-
-    # 30/30 blackout
+    # ── Gate 2: news blackout ───────────────────────────────────────────────
     if news_blackout_active():
-        log.info("[bot] 30-min pre-news blackout active — no new entries")
         return
 
-    # Post-news breakout window
-    news_result   = news_resume_window_active()
-    is_news_cycle = news_result is not None
-    if is_news_cycle:
-        news_event_time, news_title, news_country = news_result
-        log.info(f"[bot] post-news window: {news_title} ({news_country})")
+    # ── Gate 3: spread cap ──────────────────────────────────────────────────
+    if not spread_ok(symbol):
+        log.debug(f"[scan] {symbol} spread too wide — skip")
+        return
 
-    symbols_to_scan = CONFIG["news_symbols"] if is_news_cycle else CONFIG["symbols"]
+    # ── Gate 4: max open trades ─────────────────────────────────────────────
+    positions = mt5.positions_get()
+    open_count = sum(1 for p in (positions or [])
+                     if p.magic == CONFIG["magic_number"])
+    if open_count >= CONFIG["max_open_trades"]:
+        return
 
-    for symbol in symbols_to_scan:
-        try:
-            if not symbol_tradeable(symbol):
-                continue
-            sym_max_spread = max_spread_for(symbol)
-            if spread_pips(symbol) > sym_max_spread:
-                log.info(f"[bot] {symbol} spread {spread_pips(symbol):.1f} pips > "
-                         f"{sym_max_spread} — skipping")
-                continue
-            if in_cooldown(symbol):
-                continue
-            if open_positions_count(symbol) >= CONFIG["max_positions_per_symbol"]:
-                continue
-            if not currency_exposure_ok(symbol):
-                continue
+    # ── Gate 5: one position per symbol ─────────────────────────────────────
+    sym_count = sum(1 for p in (positions or [])
+                    if p.magic == CONFIG["magic_number"] and p.symbol == symbol)
+    if sym_count >= CONFIG["max_positions_per_symbol"]:
+        return
 
-            df = fetch_rates(symbol, tf_name=CONFIG["exec_tf"])
-            if df is None:
-                continue
-            df   = compute_indicators(df)
-            last = df.iloc[-2]
+    # ── Gate 6: currency correlation ────────────────────────────────────────
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        return
+    price = (tick.bid + tick.ask) / 2.0
 
-            # --- Post-news breakout ---
-            if is_news_cycle:
-                lookback  = CONFIG["news_breakout_lookback_bars"]
-                pre_news  = df[df["time"] < news_event_time].tail(lookback)
-                if len(pre_news) < lookback:
-                    continue
-                rng_high  = pre_news["high"].max()
-                rng_low   = pre_news["low"].min()
-                atr       = last["atr"]
-                tick      = mt5.symbol_info_tick(symbol)
-                if tick is None or atr <= 0:
-                    continue
-                threshold = CONFIG["news_breakout_atr_multiplier"] * atr
-                if tick.ask > rng_high + threshold:
-                    side = "BUY"
-                elif tick.bid < rng_low - threshold:
-                    side = "SELL"
-                else:
-                    continue
-                entry = tick.ask if side == "BUY" else tick.bid
-                sl_d  = atr * CONFIG["news_atr_sl_multiplier"]
-                sl_p  = entry - sl_d if side == "BUY" else entry + sl_d
-                tp_p  = entry + sl_d * CONFIG["risk_reward_ratio"] if side == "BUY" \
-                        else entry - sl_d * CONFIG["risk_reward_ratio"]
-                log_signal(conn, symbol, side, "news_breakout", entry, sl_p,
-                           entry + sl_d if side == "BUY" else entry - sl_d,
-                           tp_p, last["adx"], last["rsi"])
-                log_scan(conn, symbol, side, "news_breakout", last["adx"], atr)
-                telegram_send(
-                    f"📰 NEWS BREAKOUT: {side} {symbol} [{news_title}]\n"
-                    f"  📍 Entry: {entry:.5f}  🛑 SL: {sl_p:.5f}  🎯 TP: {tp_p:.5f}"
-                )
-                if not is_weekend():
-                    open_position(conn, symbol, side,
-                                  CONFIG["news_lot_multiplier"], tag="news")
-                continue
+    # ── Step 1: refresh HTF S&D zones ───────────────────────────────────────
+    refresh_sd_zones(symbol)
+    zone = get_active_zone(symbol, price)
+    if zone is None:
+        return
 
-            # --- Normal confluence engine ---
-            side, fvg, reason = strategy_confluence_engine(symbol, df)
-            log_scan(conn, symbol, side, reason, last["adx"], last["atr"])
+    side = "BUY" if zone["type"] == "DEMAND" else "SELL"
 
-            if side is None:
-                continue
+    # ── Step 2: 15M liquidity sweep ─────────────────────────────────────────
+    if not liquidity_swept(symbol, side):
+        log.debug(f"[scan] {symbol} {side} zone hit but no liquidity sweep")
+        return
 
-            tick  = mt5.symbol_info_tick(symbol)
-            if tick is None:
-                continue
-            entry = fvg["mid"] if fvg else (tick.ask if side == "BUY" else tick.bid)
-            atr   = last["atr"]
-            sl_d  = atr * CONFIG["atr_sl_multiplier"]
-            sl_p  = entry - sl_d if side == "BUY" else entry + sl_d
-            tp1   = entry + sl_d if side == "BUY" else entry - sl_d
-            tp2   = entry + sl_d * CONFIG["risk_reward_ratio"] if side == "BUY" \
-                    else entry - sl_d * CONFIG["risk_reward_ratio"]
-            sl_pips = round(sl_d / pip_size(symbol))
+    # ── Step 3: 5M CHoCH confirmation ───────────────────────────────────────
+    if not detect_choch(symbol, side):
+        log.debug(f"[scan] {symbol} {side} sweep confirmed, waiting CHoCH")
+        return
 
-            log_signal(conn, symbol, side, "confluence_engine", entry, sl_p,
-                       tp1, tp2, last["adx"], last["rsi"],
-                       fvg["top"] if fvg else None,
-                       fvg["bottom"] if fvg else None)
+    # ── Gate 6: currency exposure ────────────────────────────────────────────
+    if not currency_exposure_ok(symbol):
+        log.info(f"[scan] {symbol} currency exposure limit reached")
+        return
 
-            sessions = ", ".join(get_current_sessions()) or "Off-hours"
-            kz_name  = get_active_killzone() or "Off-hours"
-            order_type = "Buy Limit" if (side == "BUY" and fvg) else \
-                         "Sell Limit" if (side == "SELL" and fvg) else \
-                         ("Buy" if side == "BUY" else "Sell")
-            fvg_note = (f"\n🔲 FVG Box: {fvg['bottom']:.5f} — {fvg['top']:.5f}"
-                        f"  |  Entry @ 50% EQ: {fvg['mid']:.5f}") if fvg else ""
+    # ── Compute entry, SL, TP ────────────────────────────────────────────────
+    info     = mt5.symbol_info(symbol)
+    pip_size = 0.01 if ("JPY" in symbol or symbol in ("XAUUSD","XAGUSD")) else 0.0001
+    sl_buf   = 1.5 * pip_size   # 1.5 pips below/above zone wick
 
-            if CONFIG["telegram_notify_on_signal"]:
-                weekend_note = " (weekend — queued)" if is_weekend() else ""
-                telegram_send(
-                    f"🚨 SESSION ALERT: {kz_name.upper()} 🚨\n"
-                    f"⏰ Time: {datetime.now(timezone.utc).strftime('%H:%M UTC')}\n"
-                    f"📊 Tracking: {len(CONFIG['symbols'])} Currency Pairs\n"
-                    f"⚡ Status: Asian Range Mapped. Liquidity Swept. FVG Confirmed.\n"
-                    f"--------------------------------------------------\n"
-                    f"⚡ NEW SIGNAL EXECUTED ⚡{weekend_note}\n"
-                    f"📈 Pair: {symbol} ({order_type})\n"
-                    f"🎯 Strategy: Confluence Engine (Asia Sweep + FVG)\n"
-                    f"📥 Entry Price: {entry:.5f}\n"
-                    f"🛑 Stop Loss: {sl_p:.5f} ({sl_pips} Pips)\n"
-                    f"🎯 Take Profit 1: {tp1:.5f} (1:1 RR - Move to BE)\n"
-                    f"🎯 Take Profit 2: {tp2:.5f} (1:{CONFIG['risk_reward_ratio']:.0f} RR - Target)\n"
-                    f"💰 Calculated Risk: {CONFIG['risk_per_trade_pct']:.2f}% (Exact Position Sized)\n"
-                    f"🌍 Session: {sessions}{fvg_note}"
-                )
+    if side == "BUY":
+        entry = zone["top"]
+        sl    = zone["bottom"] - sl_buf
+        risk  = abs(entry - sl)
+        tp1   = entry + risk * CONFIG["risk_reward_tp1"]
+        tp2   = entry + risk * CONFIG["risk_reward_tp2"]
+    else:
+        entry = zone["bottom"]
+        sl    = zone["top"] + sl_buf
+        risk  = abs(entry - sl)
+        tp1   = entry - risk * CONFIG["risk_reward_tp1"]
+        tp2   = entry - risk * CONFIG["risk_reward_tp2"]
 
-            if not is_weekend():
-                open_position(conn, symbol, side, fvg=fvg)
+    lot = calc_lot_size(symbol, sl, entry)
 
-        except Exception:
-            log.error(f"[bot] error on {symbol}:\n{traceback.format_exc()}")
+    # ── Fire limit order ─────────────────────────────────────────────────────
+    comment  = f"SD_{zone['pattern']}_{kz[:2]}"
+    order_id = place_limit_order(symbol, side, entry, sl, tp1, tp2, lot,
+                                 comment, conn)
+    if order_id is None:
+        return
+
+    # ── Mark zone mitigated (first touch rule) ───────────────────────────────
+    mark_mitigated(symbol, zone)
+
+    # ── Log signal ───────────────────────────────────────────────────────────
+    atr_rates = mt5.copy_rates_from_pos(symbol, TIMEFRAME_MAP[CONFIG["htf"]], 0, 20)
+    atr_val   = _calc_atr(pd.DataFrame(atr_rates)) if atr_rates is not None else 0.0
+    log_signal(conn, symbol, side, f"SD_{zone['pattern']}", entry, sl, tp1, tp2,
+               0.0, 0.0, zone["top"], zone["bottom"])
+
+    # ── Telegram notification ────────────────────────────────────────────────
+    send_execution_signal(symbol, side, entry, sl, tp1, tp2, lot, zone, kz)
+    log.info(f"[signal] {symbol} {side} {zone['pattern']} entry={entry:.5f} "
+             f"sl={sl:.5f} tp1={tp1:.5f} tp2={tp2:.5f} lot={lot}")
 
 
 # =============================================================================
-# MT5 AUTO-RECONNECT
+# HEARTBEAT & DAILY SUMMARY
 # =============================================================================
-def ensure_mt5_connected() -> bool:
-    if mt5.terminal_info() is not None:
-        return True
-    log.warning("[mt5] connection lost — reconnecting...")
-    telegram_send("⚠️ MT5 connection lost — reconnecting...")
-    time.sleep(5)
-    return initialize_mt5()
+def send_heartbeat():
+    now = datetime.now(timezone.utc)
+    if (S.last_heartbeat is not None and
+            (now - S.last_heartbeat).total_seconds() <
+            CONFIG["telegram_heartbeat_hours"] * 3600):
+        return
+    S.last_heartbeat = now
+    info     = mt5.account_info()
+    kz       = get_active_killzone() or "None"
+    sessions = ", ".join(get_current_sessions()) or "None"
+    eat      = (now + timedelta(hours=3)).strftime("%H:%M EAT")
+    zones_total = sum(len(v) for v in S.sd_zones.values())
+    positions   = mt5.positions_get() or []
+    open_trades = sum(1 for p in positions if p.magic == CONFIG["magic_number"])
+    bal  = f"{info.balance:.2f}" if info else "N/A"
+    eq   = f"{info.equity:.2f}"  if info else "N/A"
+    telegram_send(
+        f"💓 KORIRBOT HEARTBEAT\n"
+        f"🕐 {eat}\n"
+        f"⚡ Killzone: {kz} | Sessions: {sessions}\n"
+        f"💰 Balance: {bal} | Equity: {eq}\n"
+        f"📊 Open Trades: {open_trades} | Fresh Zones: {zones_total}\n"
+        f"🔍 Scanning: {len(CONFIG['symbols'])} pairs"
+    )
 
 
-def initialize_mt5() -> bool:
-    m      = CONFIG["mt5"]
-    if not m["path"]:
-        log.error("[mt5] MT5_PATH is not set in .env — cannot initialize")
+def send_daily_summary(conn):
+    now = datetime.now(timezone.utc)
+    if now.hour != CONFIG["daily_summary_hour_utc"]:
+        return
+    if (S.last_daily_summary is not None and
+            (now - S.last_daily_summary).total_seconds() < 3600):
+        return
+    S.last_daily_summary = now
+    update_realized_pnl(conn)
+    row  = get_or_init_daily_row(conn)
+    info = mt5.account_info()
+    pnl  = row["realized_pnl"] if row else 0.0
+    bal  = info.balance if info else 0.0
+    eat  = (now + timedelta(hours=3)).strftime("%d %b %Y")
+    telegram_send(
+        f"📋 DAILY SUMMARY — {eat}\n"
+        f"💰 Realized P&L: {pnl:+.2f}\n"
+        f"💼 Balance: {bal:.2f}\n"
+        f"🔒 Circuit breaker: {'TRIGGERED' if row and row['halted'] else 'OK'}"
+    )
+
+
+# =============================================================================
+# MT5 INITIALISATION
+# =============================================================================
+def _launch_mt5_terminal(path: str) -> bool:
+    """Launch MT5 terminal process and wait for it to be ready."""
+    import subprocess
+    if not os.path.exists(path):
+        log.error(f"[mt5] terminal not found at: {path}")
         return False
-    kwargs = {"path": m["path"]}
-    if m["login"]:
-        kwargs.update(login=m["login"], password=m["password"], server=m["server"])
-    ok = mt5.initialize(**kwargs)
-    if not ok:
-        log.error(f"[mt5] initialize failed: {mt5.last_error()}")
-        return False
-    log.info(f"[mt5] connected: {mt5.terminal_info()}")
+    log.info(f"[mt5] launching terminal: {path}")
+    subprocess.Popen([path])
+    for i in range(30):  # wait up to 30s
+        time.sleep(1)
+        if mt5.initialize(path=path):
+            mt5.shutdown()
+            return True
+        log.info(f"[mt5] waiting for terminal to start... ({i+1}/30)")
+    return False
+
+
+def _enable_all_symbols():
+    """Add all configured symbols to Market Watch."""
+    added = []
+    for sym in CONFIG["symbols"]:
+        info = mt5.symbol_info(sym)
+        if info is None:
+            continue
+        if not info.visible:
+            mt5.symbol_select(sym, True)
+            added.append(sym)
+    if added:
+        log.info(f"[mt5] added to Market Watch: {', '.join(added)}")
+
+
+def init_mt5() -> bool:
+    cfg = CONFIG["mt5"]
+    # Try to initialize — if terminal not running, launch it
+    kwargs = {"path": cfg["path"]} if cfg["path"] else {}
+    if not mt5.initialize(**kwargs):
+        err = mt5.last_error()
+        log.warning(f"[mt5] initialize failed ({err}) — attempting to launch terminal")
+        if cfg["path"] and _launch_mt5_terminal(cfg["path"]):
+            if not mt5.initialize(path=cfg["path"]):
+                log.error(f"[mt5] still failed after launch: {mt5.last_error()}")
+                return False
+        else:
+            log.error("[mt5] could not launch terminal — open MT5 manually and retry")
+            return False
+    if cfg["login"] and cfg["password"] and cfg["server"]:
+        if not mt5.login(cfg["login"], password=cfg["password"],
+                         server=cfg["server"]):
+            log.error(f"[mt5] login failed: {mt5.last_error()}")
+            mt5.shutdown()
+            return False
+    # Auto-add all symbols to Market Watch
+    _enable_all_symbols()
+    info = mt5.account_info()
+    if info:
+        log.info(f"[mt5] connected — {info.server} | #{info.login} | balance={info.balance:.2f}")
     return True
 
 
 # =============================================================================
-# MAIN
+# MAIN LOOP
 # =============================================================================
 def main():
-    parser = argparse.ArgumentParser(description="The Perfect Forex Bot")
-    parser.add_argument("--predict", action="store_true",
-                        help="Run CPI/news prediction and exit")
+    parser = argparse.ArgumentParser(description="KorirBot S&D Engine")
+    parser.add_argument("--once", action="store_true",
+                        help="Run one scan cycle then exit (for testing)")
     args = parser.parse_args()
 
-    if not initialize_mt5():
+    log.info("=" * 60)
+    log.info("KORIRBOT — Supply & Demand Confluence Engine STARTING")
+    log.info("=" * 60)
+
+    if not init_mt5():
         sys.exit(1)
 
-    # --predict mode: run prediction for all upcoming events and exit
-    if args.predict:
-        fetch_forex_calendar()
-        events = get_upcoming_events(
-            lookahead_minutes=CONFIG["startup_events_lookahead_minutes"])
-        if not events:
-            # No scheduled event — predict against next known high-impact event
-            all_events = fetch_forex_calendar()
-            if all_events:
-                dt, title, country, _ = sorted(all_events)[0]
-                predict_news_event(title, country)
-            else:
-                log.info("[predict] no high-impact events found this week")
-        else:
-            for dt, title, country in events:
-                predict_news_event(title, country)
-        mt5.shutdown()
-        return
+    conn = db_connect()
 
-    conn     = db_connect()
-    info     = mt5.account_info()
-    sessions = ", ".join(get_current_sessions()) or "None active"
-    kz       = get_active_killzone() or "None"
-
-    # Send startup events alert
-    send_upcoming_events_alert(
-        lookahead=CONFIG["startup_events_lookahead_minutes"])
+    # Startup: announce upcoming news
+    send_upcoming_events_alert(CONFIG["startup_events_lookahead_minutes"])
 
     telegram_send(
-        f"🤖 THE PERFECT FOREX BOT — STARTED\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 Balance  : {info.balance:.2f}\n"
-        f"📊 Pairs    : {len(CONFIG['symbols'])}\n"
-        f"🌍 Sessions : {sessions}\n"
-        f"⚡ Killzone : {kz}\n"
-        f"🎯 Strategy : ICT/SMC Confluence Engine\n"
-        f"  Step 1 → 4H BOS/MSS Bias\n"
-        f"  Step 2 → Asian Range Liquidity Sweep\n"
-        f"  Step 3 → FVG Limit @ 50% Equilibrium\n"
-        f"🛡 Risk     : {CONFIG['risk_per_trade_pct']}% per trade | "
-        f"{CONFIG['max_daily_loss_pct']}% daily circuit breaker\n"
-        f"📰 Calendar : Auto-fetch (30/30 rule active)\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        "🚀 KORIRBOT ONLINE\n"
+        "📊 Strategy: Supply & Demand Confluence Engine\n"
+        f"🔍 Scanning {len(CONFIG['symbols'])} pairs\n"
+        "⚡ Killzones: London 10:00-13:00 EAT | NY 15:00-18:00 EAT\n"
+        "🛡️ Risk: 1% per trade | 3% daily circuit breaker"
     )
-    log.info(f"[bot] started — {len(CONFIG['symbols'])} pairs, ICT/SMC Confluence Engine")
-
-    loops         = 0
-    last_bar_time = {}
-    exec_tf_const = TIMEFRAME_MAP[CONFIG["exec_tf"]]
 
     try:
         while True:
-            if not ensure_mt5_connected():
-                time.sleep(60)
-                continue
+            try:
+                # ── Session / killzone change alerts ────────────────────────
+                check_session_change()
 
-            if is_weekend():
-                log.info("[bot] weekend — sleeping 30 min")
-                time.sleep(1800)
-                continue
+                # ── News alert ───────────────────────────────────────────────
+                send_upcoming_events_alert()
 
-            check_session_change()
-            check_heartbeat()
-            check_scheduled_reports(conn)
-            manage_open_positions(conn)
-
-            new_bar = False
-            for symbol in CONFIG["symbols"]:
-                rates = mt5.copy_rates_from_pos(symbol, exec_tf_const, 0, 1)
-                if rates is None or len(rates) == 0:
+                # ── Circuit breaker check ────────────────────────────────────
+                if trading_halted_for_today(conn):
+                    log.info("[main] trading halted for today — sleeping")
+                    time.sleep(CONFIG["poll_seconds"])
                     continue
-                bar_time = rates[0]["time"]
-                if last_bar_time.get(symbol) != bar_time:
-                    last_bar_time[symbol] = bar_time
-                    new_bar = True
 
-            cancel_expired_fvg_orders()
-            update_realized_pnl(conn)
+                # ── Asian range mode: no trades ──────────────────────────────
+                kz = get_active_killzone()
+                if kz == "Asian Range":
+                    # still update ranges so they're ready for London open
+                    for sym in CONFIG["symbols"]:
+                        update_asian_range(sym)
+                    time.sleep(CONFIG["poll_seconds"])
+                    continue
 
-            if new_bar:
-                run_cycle(conn)
-            else:
-                loops += 1
-                if loops % 30 == 0:
-                    log.info("[bot] waiting for next candle close")
+                # ── Manage existing trades ───────────────────────────────────
+                manage_open_trades(conn)
+                update_realized_pnl(conn)
 
+                # ── Scan all symbols ─────────────────────────────────────────
+                if in_tradeable_killzone():
+                    for sym in CONFIG["symbols"]:
+                        try:
+                            scan_symbol(sym, conn)
+                        except Exception as e:
+                            log.error(f"[scan] {sym} error: {e}\n"
+                                      f"{traceback.format_exc()}")
+
+                # ── Heartbeat & daily summary ────────────────────────────────
+                send_heartbeat()
+                send_daily_summary(conn)
+
+            except Exception as e:
+                log.error(f"[main] loop error: {e}\n{traceback.format_exc()}")
+
+            if args.once:
+                break
             time.sleep(CONFIG["poll_seconds"])
 
     except KeyboardInterrupt:
-        log.info("[bot] stopped by user")
-        _close_all_positions_to_breakeven(conn)
-        telegram_send("🛑 Bot stopped by user — open positions moved to breakeven")
-    except Exception:
-        log.error(f"[bot] fatal:\n{traceback.format_exc()}")
-        _close_all_positions_to_breakeven(conn)
-        telegram_send("⚠️ Bot crashed — open positions moved to breakeven. Check logs.")
+        log.info("[main] interrupted by user")
     finally:
-        conn.close()
+        telegram_send("🔴 KORIRBOT OFFLINE — manual shutdown")
         mt5.shutdown()
+        conn.close()
+        log.info("[main] shutdown complete")
 
 
 if __name__ == "__main__":
